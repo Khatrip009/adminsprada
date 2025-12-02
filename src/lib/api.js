@@ -2,6 +2,9 @@
 // Robust frontend API helper with automatic token refresh + normalization.
 // Space-aware uploads: POST to /api/uploads/<space> and serve files from /uploads/<space>/...
 
+/* -----------------------
+   Config / constants
+   ----------------------- */
 export const API_ORIGIN = (import.meta.env.VITE_API_ORIGIN || "http://localhost:4200").replace(/\/$/, "");
 export const API_BASE = `${API_ORIGIN}/api`;
 export const UPLOAD_STRATEGY = (import.meta.env.VITE_UPLOAD_STRATEGY || "local").toLowerCase();
@@ -18,18 +21,39 @@ function authHeaders() {
 
 async function tryParseJSON(response) {
   // return parsed json if possible, otherwise raw text or null
-  const txt = await response.text();
+  if (!response) return null;
   try {
-    return txt ? JSON.parse(txt) : null;
-  } catch {
-    return txt || null;
+    const txt = await response.text();
+    try {
+      return txt ? JSON.parse(txt) : null;
+    } catch {
+      return txt || null;
+    }
+  } catch (err) {
+    return null;
   }
+}
+
+/* -----------------------
+   Centralized logout helper
+   - Removes tokens/user from localStorage
+   - Dispatches a global "app:logout" event so UI can listen and react
+   ----------------------- */
+export function logout() {
+  try { localStorage.removeItem("accessToken"); } catch (_) {}
+  try { localStorage.removeItem("refreshToken"); } catch (_) {}
+  try { localStorage.removeItem("user"); } catch (_) {}
+
+  // Dispatch an event so UI / stores can react (redirect, show toast, clear redux)
+  try {
+    window.dispatchEvent(new CustomEvent("app:logout"));
+  } catch (_) {}
 }
 
 /* -----------------------
    Token refresh helpers
    ----------------------- */
-async function attemptRefresh() {
+export async function attemptRefresh() {
   const refreshToken = localStorage.getItem("refreshToken");
   if (!refreshToken) return false;
 
@@ -42,6 +66,7 @@ async function attemptRefresh() {
     });
 
     if (!res.ok) {
+      // remove local tokens if refresh endpoint explicitly failed
       try { localStorage.removeItem("accessToken"); } catch (_) {}
       try { localStorage.removeItem("refreshToken"); } catch (_) {}
       try { localStorage.removeItem("user"); } catch (_) {}
@@ -68,45 +93,82 @@ async function attemptRefresh() {
 }
 
 /* -----------------------
-   Utility: make relative/partial urls absolute
+   Utility: make relative/partial urls absolute (improved)
    - If url is already absolute, returned unchanged.
    - If url starts with /uploads or /src/uploads, prefix with API_ORIGIN.
-   - If url is a bare filename or space path, prefix with UPLOADS_BASE.
+   - If url is uploads/... or src/uploads/... or a bare filename, prefix with UPLOADS_BASE.
    ----------------------- */
 export function toAbsoluteImageUrl(url) {
-  if (!url) return null;
-  if (typeof url !== "string") return null;
+  if (!url || typeof url !== "string") return null;
   const trimmed = url.trim();
   if (!trimmed) return null;
+
+  // Already absolute
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  if (/^\/uploads\//i.test(trimmed) || /^\/src\/uploads\//i.test(trimmed)) {
+
+  // Starts with /uploads or /src/uploads
+  if (/^\/(?:src\/)?uploads\//i.test(trimmed)) {
     return `${API_ORIGIN}${trimmed}`;
   }
-  if (/^uploads\//i.test(trimmed) || /^src\/uploads\//i.test(trimmed)) {
+
+  // Relative uploads path like uploads/foo.jpg or src/uploads/...
+  if (/^(?:src\/)?uploads\//i.test(trimmed)) {
     return `${API_ORIGIN}/${trimmed.replace(/^\/+/, "")}`;
   }
-  // simple filename or products/... -> assume uploads space
+
+  // Bare filename or path -> assume uploads base (space)
   if (!trimmed.startsWith("/")) {
     return `${UPLOADS_BASE.replace(/\/$/, "")}/${trimmed.replace(/^\/+/, "")}`;
   }
-  // fallback
+
+  // Fallback: prefix API_ORIGIN
   return `${API_ORIGIN}${trimmed}`;
 }
 
 /* -----------------------
-   Core fetch wrapper
+   Core fetch wrapper (improved)
+   - Normalizes path slashes
+   - Supports optional timeoutMs in opts (non-breaking)
+   - Calls logout() when refresh fails and tokens removed
    ----------------------- */
 async function apiFetch(path, opts = {}, { _retrying = false } = {}) {
-  // allow absolute URLs to be passed directly (don't prefix)
-  const url = /^https?:\/\//i.test(path) ? path : `${API_BASE}${path}`;
+  // normalize path: allow absolute URL or relative paths with or without leading slash
+  let url;
+  if (/^https?:\/\//i.test(path)) {
+    url = path;
+  } else {
+    const p = path && typeof path === "string" ? (path.startsWith("/") ? path : `/${path}`) : "/";
+    url = `${API_BASE}${p}`;
+  }
+
+  // timeout helper (optional)
+  const timeoutMs = (opts && typeof opts.timeoutMs === "number") ? opts.timeoutMs : 0;
+  let controller;
+  let timeoutId;
+  if (timeoutMs > 0) {
+    controller = new AbortController();
+    // ensure we don't clobber existing signal if passed
+    if (!opts.signal) opts.signal = controller.signal;
+    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  }
 
   try {
-    // Merge headers carefully. Default to JSON unless caller sets FormData (see callers)
-    const headers = { "Content-Type": "application/json", ...(opts.headers || {}), ...authHeaders() };
+    // Default headers; respect caller-provided opts.headers and always ensure auth header appended
+    // If opts.headers is a Headers instance we try to convert it to plain object for checks below
+    let incomingHeaders = opts.headers || {};
+    if (incomingHeaders instanceof Headers) {
+      const obj = {};
+      for (const [k, v] of incomingHeaders.entries()) obj[k] = v;
+      incomingHeaders = obj;
+    }
 
-    // If caller passed multipart/form-data header marker, remove default Content-Type so browser sets boundary
-    if (opts.headers && (opts.headers['Content-Type'] === 'multipart/form-data' || opts.headers['content-type'] === 'multipart/form-data')) {
+    const headers = { "Content-Type": "application/json", ...(incomingHeaders || {}), ...authHeaders() };
+
+    // If caller explicitly provided multipart marker, remove Content-Type so browser sets boundary
+    const callerCT = (incomingHeaders && (incomingHeaders['Content-Type'] || incomingHeaders['content-type']));
+    if (callerCT && /multipart\/form-data/i.test(String(callerCT))) {
       delete headers['Content-Type'];
+      delete headers['content-type'];
     }
 
     const res = await fetch(url, {
@@ -114,6 +176,8 @@ async function apiFetch(path, opts = {}, { _retrying = false } = {}) {
       headers,
       credentials: "include"
     });
+
+    if (timeoutId) clearTimeout(timeoutId);
 
     if (res.status === 204) return null;
     const data = await tryParseJSON(res);
@@ -123,6 +187,8 @@ async function apiFetch(path, opts = {}, { _retrying = false } = {}) {
       if (res.status === 401 && !_retrying) {
         const refreshed = await attemptRefresh();
         if (refreshed) return apiFetch(path, opts, { _retrying: true });
+        // Token refresh failed: clear tokens + notify app
+        logout();
         const err = new Error("unauthorized");
         err.status = 401;
         err.data = data;
@@ -137,28 +203,39 @@ async function apiFetch(path, opts = {}, { _retrying = false } = {}) {
 
     return data;
   } catch (err) {
+    if (err?.name === "AbortError") {
+      const abortErr = new Error("request_timeout");
+      abortErr.status = 0;
+      throw abortErr;
+    }
+
+    // More helpful logs for debugging; avoid noisy logs for expected 4xx handled upstream
     if (!err || !err.status || err.status >= 500) {
-      console.error("[apiFetch]", url, err);
+      console.error("[apiFetch] ERROR", url, err);
     } else {
-      console.debug("[apiFetch] (handled)", url, err && err.status ? `status=${err.status}` : err);
+      console.debug("[apiFetch] handled", url, err && err.status ? `status=${err.status}` : err);
     }
     throw err;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
 }
 
 /* Basic helpers */
-export async function apiGet(path) { return apiFetch(path, { method: "GET" }); }
-export async function apiPost(path, body) {
-  const bodyStr = (body instanceof FormData) ? body : JSON.stringify(body);
-  const headers = (body instanceof FormData) ? {} : { "Content-Type": "application/json" };
-  return apiFetch(path, { method: "POST", body: bodyStr, headers });
+export async function apiGet(path, opts = {}) { return apiFetch(path, { method: "GET", ...opts }); }
+export async function apiPost(path, body, opts = {}) {
+  const isForm = body instanceof FormData;
+  const bodyStr = isForm ? body : JSON.stringify(body);
+  const headers = isForm ? (opts.headers || {}) : { "Content-Type": "application/json", ...(opts.headers || {}) };
+  return apiFetch(path, { method: "POST", body: bodyStr, headers, ...opts });
 }
-export async function apiPut(path, body) {
-  const bodyStr = (body instanceof FormData) ? body : JSON.stringify(body);
-  const headers = (body instanceof FormData) ? {} : { "Content-Type": "application/json" };
-  return apiFetch(path, { method: "PUT", body: bodyStr, headers });
+export async function apiPut(path, body, opts = {}) {
+  const isForm = body instanceof FormData;
+  const bodyStr = isForm ? body : JSON.stringify(body);
+  const headers = isForm ? (opts.headers || {}) : { "Content-Type": "application/json", ...(opts.headers || {}) };
+  return apiFetch(path, { method: "PUT", body: bodyStr, headers, ...opts });
 }
-export async function apiDelete(path) { return apiFetch(path, { method: "DELETE" }); }
+export async function apiDelete(path, opts = {}) { return apiFetch(path, { method: "DELETE", ...opts }); }
 
 /* -----------------------
    Auth
@@ -227,6 +304,7 @@ export async function getBlogFlexible(blogId) {
     try {
       const res = await apiGet(path);
       if (!res) continue;
+      // server might return { ok: true, blog: {...} } or plain blog object
       if (res.ok && res.blog) return res.blog;
       if (res.blog) return res.blog;
       if (res.id || res.title) return res;
@@ -569,5 +647,6 @@ export default {
   attachBlogImage, uploadAndAttachBlogImage, getBlogImages, deleteBlogImage,
   createBlog, updateBlog, deleteBlog, publishBlog, uploadBlogEditorFile,
   postComment, getComments, updateComment, deleteComment,
-  toggleLike, getLikesCount, toAbsoluteImageUrl, getBlogFlexible
+  toggleLike, getLikesCount, toAbsoluteImageUrl, getBlogFlexible,
+  attemptRefresh, logout
 };
