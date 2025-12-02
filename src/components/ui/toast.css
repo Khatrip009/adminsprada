@@ -1,0 +1,21 @@
+/* src/ui/toast.css */
+
+/* Ensure the viewport is clickable and positioned on the top-right for small screens */
+.toast-viewport-fix {
+  pointer-events: none;
+}
+
+/* small visual niceties if you want them */
+.toast-card {
+  /* fallback if theme vars are missing */
+  border-radius: 10px;
+}
+
+/* reduce motion for users who prefer reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .toast-card,
+  .toast-viewport-fix {
+    transition: none !important;
+    animation: none !important;
+  }
+}

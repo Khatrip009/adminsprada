@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-gradient-to-br from-white to-[rgba(247,216,180,0.40)] font-sans h-full text-sprada2 transition-colors duration-300;
+}
+
+/* -----------------------------
+   DARK MODE (Tailwind class-based)
+   ----------------------------- */
+.dark body {
+  /* smooth background transition */
+  @apply text-slate-200;
+  background: linear-gradient(to bottom right, #0f172a, #1e293b); /* slate-900 → slate-800 */
+}
+
+.dark .card,
+.dark .bg-white {
+  @apply bg-slate-900;
+}
+
+.dark .border {
+  @apply border-slate-700;
+}
+
+/* Form fields */
+input:focus,
+textarea:focus {
+  outline: none;
+}
+
+.dark input,
+.dark textarea {
+  @apply bg-slate-800 text-slate-100 border-slate-700;
+}
+
+.dark input::placeholder,
+.dark textarea::placeholder {
+  @apply text-slate-400;
+}
+
+/* -----------------------------
+   BLOG IMAGE RULES
+   ----------------------------- */
+.chart-card {
+  min-height: 260px;
+  padding: 1rem;
+}
+
+#sprada-blog-imgs,
+.blog-content,
+.prose.blog-content,
+.tiptap-content.blog-content {}
+
+/* unified image styling */
+.blog-content img,
+.prose.blog-content img,
+.tiptap-content.blog-content img {
+  display: block;
+  margin: 18px auto;
+  width: auto;
+  max-width: 720px;
+  height: auto;
+  object-fit: contain;
+  border-radius: 6px;
+}
+
+/* XL screens */
+@media (min-width: 1280px) {
+  .blog-content img,
+  .prose.blog-content img {
+    max-width: 720px;
+  }
+}
+
+/* MOBILE */
+@media (max-width: 640px) {
+  .blog-content img,
+  .prose.blog-content img {
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
+    margin-right: 0;
+  }
+}
