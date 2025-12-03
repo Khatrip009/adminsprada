@@ -18,6 +18,8 @@ import {
   getProductImages,
   deleteProductImage,
   patchProductImage,
+  toAbsoluteImageUrl,
+  API_ORIGIN
 } from "../lib/api";
 import clsx from "clsx";
 import dayjs from "dayjs";
@@ -140,6 +142,81 @@ function TradeBadge({ trade }) {
       Both
     </span>
   );
+}
+
+/* ---------------------------
+   Image helpers (new, defensive)
+   - Prevent attempts to load local FS paths like /mnt/ or C:\ which cause 404s.
+   - Convert safe relative /uploads paths to absolute using toAbsoluteImageUrl().
+   --------------------------- */
+
+function isLocalFilesystemPath(value) {
+  if (!value || typeof value !== "string") return false;
+  const v = value.toLowerCase();
+  if (v.startsWith("/mnt/")) return true;
+  if (v.startsWith("c:\\") || v.startsWith("d:\\")) return true;
+  if (v.startsWith("file://")) return true;
+  if (v.includes("\\users\\")) return true;
+  return false;
+}
+
+/**
+ * Return an absolute public URL for image or null if it's unsafe (local fs).
+ * Uses toAbsoluteImageUrl() for conversion and also tolerates already-absolute URLs.
+ */
+function safeAbsoluteImageUrl(raw) {
+  if (!raw || typeof raw !== "string") return null;
+  // If it's already absolute and http(s) - keep it
+  if (/^https?:\/\//i.test(raw)) return raw;
+  // If it's a data URL, keep it
+  if (/^data:/i.test(raw)) return raw;
+  // If it looks like local FS path, block it (return null)
+  if (isLocalFilesystemPath(raw)) return null;
+
+  // Convert relative/partial uploads paths
+  try {
+    const abs = toAbsoluteImageUrl(raw);
+    if (!abs) return null;
+    if (/\/mnt\//i.test(abs)) return null;
+    return abs;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Normalize product payload image fields before save.
+ * Ensures og_image / primary_image / metadata.og_image are absolute URLs or null.
+ */
+function normalizeBeforeSave(payload = {}) {
+  const out = { ...payload };
+
+  function normField(v, space = "products") {
+    if (!v) return null;
+    if (isLocalFilesystemPath(v)) return null;
+    if (/^https?:\/\//i.test(v)) return v;
+    if (/^\/(?:src\/)?uploads\//i.test(v)) {
+      // prefix API origin
+      return `${API_ORIGIN}${v}`;
+    }
+    if (/^(?:src\/)?uploads\//i.test(v)) {
+      return `${API_ORIGIN}/${v.replace(/^\/+/, "")}`;
+    }
+    // bare filename -> assume uploads/<space>/<filename>
+    if (!v.startsWith("/")) {
+      return `${API_ORIGIN}/uploads/${space}/${v.replace(/^\/+/, "")}`;
+    }
+    // fallback prefix
+    return `${API_ORIGIN}${v}`;
+  }
+
+  if (out.og_image !== undefined) out.og_image = normField(out.og_image, "products");
+  if (out.primary_image !== undefined) out.primary_image = normField(out.primary_image, "products");
+  if (out.metadata && typeof out.metadata === "object" && out.metadata.og_image !== undefined) {
+    out.metadata = { ...out.metadata, og_image: normField(out.metadata.og_image, "products") };
+  }
+
+  return out;
 }
 
 /* ---------------------------
@@ -389,7 +466,7 @@ function ProductsAdmin() {
               <article key={p.id} className="bg-white border rounded-2xl p-4 hover:shadow-md transition-transform transform hover:-translate-y-1">
                 <div className="flex items-start gap-4">
                   <div className="w-28 h-28 bg-gray-50 rounded-lg overflow-hidden flex items-center justify-center flex-shrink-0">
-                    {p.primary_image ? <img src={normalizeUploadUrl(p.primary_image)} alt={p.title} className="w-full h-full object-cover" /> : <div className="text-xs text-[color:var(--sprada-muted)]">No image</div>}
+                    {p.primary_image ? <img src={safeAbsoluteImageUrl(normalizeUploadUrl(p.primary_image))} alt={p.title} className="w-full h-full object-cover" onError={(e)=>{e.currentTarget.src=''}} /> : <div className="text-xs text-[color:var(--sprada-muted)]">No image</div>}
                   </div>
                   <div className="flex-1 min-w-0">
                     <h3 className="sprada-heading font-medium text-slate-800 line-clamp-2">{p.title}</h3>
@@ -492,13 +569,14 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
       }
       setBusy(true);
       let res;
-      const payload = {
+      // normalize image fields before sending
+      const payloadPrepared = normalizeBeforeSave({
         ...form,
-        // send explicit trade_type value (null or 'both' etc.)
         trade_type: form.trade_type ?? null,
-      };
-      if (form.id) res = await apiPut(`/products/${encodeURIComponent(form.id)}`, payload);
-      else res = await apiPost("/products", payload);
+      });
+
+      if (form.id) res = await apiPut(`/products/${encodeURIComponent(form.id)}`, payloadPrepared);
+      else res = await apiPost("/products", payloadPrepared);
 
       const created = res && (res.product || res.product_id || res.id) ? (res.product || res) : res;
       toast.success("Product saved");
@@ -648,7 +726,7 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
 
         <div className="mt-4 flex items-center gap-4">
           <div className="w-28 h-28 bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center">
-            {form.og_image ? <img src={normalizeUploadUrl(form.og_image)} alt="" className="w-full h-full object-cover" /> : <div className="text-xs text-[color:var(--sprada-muted)]">No image</div>}
+            {form.og_image ? <img src={safeAbsoluteImageUrl(normalizeUploadUrl(form.og_image))} alt="" className="w-full h-full object-cover" /> : <div className="text-xs text-[color:var(--sprada-muted)]">No image</div>}
           </div>
 
           <div>
@@ -663,7 +741,7 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
         <div className="mt-4 grid grid-cols-3 gap-3">
           {images.map((img) => (
             <div key={img.id || img.url} className="border rounded-lg p-2 relative hover:shadow-sm transition">
-              <img src={normalizeUploadUrl(img.url || img.path || img.public_url || "")} alt="" className="w-full h-28 object-cover rounded" />
+              <img src={safeAbsoluteImageUrl(normalizeUploadUrl(img.url || img.path || img.public_url || ""))} alt="" className="w-full h-28 object-cover rounded" />
               <div className="flex items-center justify-between mt-2">
                 <button onClick={() => setPrimary(img)} className={`text-xs px-2 py-1 border rounded ${img.is_primary ? "bg-[color:var(--sprada-accent)] text-white" : ""}`}>{img.is_primary ? "Primary" : "Set Primary"}</button>
                 <button onClick={() => removeImage(img)} className="text-xs px-2 py-1 border rounded text-red-600">Delete</button>

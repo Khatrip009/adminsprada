@@ -25,7 +25,9 @@ import {
   apiPost,
   apiPut,
   apiDelete,
-  uploadFile
+  uploadFile,
+  toAbsoluteImageUrl,
+  API_ORIGIN
 } from "../lib/api";
 
 /* ---------------------------
@@ -89,6 +91,58 @@ function normalizeUploadUrl(url) {
     return url;
   } catch (e) {
     return url; // likely already relative
+  }
+}
+
+/* ---------------------------
+   Defensive image helpers (added)
+   - block local filesystem paths from being requested
+   - convert relative /uploads and uploads/... and bare filenames into absolute public URLs
+   --------------------------- */
+function isLocalFilesystemPath(value) {
+  if (!value || typeof value !== "string") return false;
+  const v = value.trim().toLowerCase();
+  if (!v) return false;
+  if (v.startsWith("/mnt/")) return true;
+  if (v.startsWith("c:\\") || v.startsWith("d:\\")) return true;
+  if (v.startsWith("file://")) return true;
+  if (v.includes("\\users\\")) return true;
+  return false;
+}
+
+function safeAbsoluteImageUrl(raw, space = "blogs") {
+  if (!raw || typeof raw !== "string") return null;
+  const val = raw.trim();
+  if (!val) return null;
+  // allow data URLs
+  if (/^data:/i.test(val)) return val;
+  // allow http(s)
+  if (/^https?:\/\//i.test(val)) return val;
+  // block local FS
+  if (isLocalFilesystemPath(val)) return null;
+
+  // use toAbsoluteImageUrl if available (handles /uploads and uploads paths)
+  try {
+    const abs = toAbsoluteImageUrl ? toAbsoluteImageUrl(val) : null;
+    if (abs && !/\/mnt\//i.test(abs)) return abs;
+  } catch (e) {
+    // fallback below
+  }
+
+  // fallback rules similar to front-end lib
+  try {
+    if (/^\/(?:src\/)?uploads\//i.test(val)) {
+      return `${API_ORIGIN}${val}`;
+    }
+    if (/^(?:src\/)?uploads\//i.test(val)) {
+      return `${API_ORIGIN}/${val.replace(/^\/+/, "")}`;
+    }
+    if (!val.startsWith("/")) {
+      return `${API_ORIGIN}/uploads/${space}/${val.replace(/^\/+/, "")}`;
+    }
+    return `${API_ORIGIN}${val}`;
+  } catch {
+    return null;
   }
 }
 
@@ -194,7 +248,7 @@ function BlockRenderer({ block }) {
     case "image":
       return (
         <figure key={block.url} className="my-6">
-          <img loading="lazy" src={normalizeUploadUrl(block.url)} alt={block.alt || ""} className="w-full rounded-md shadow-sm object-cover" />
+          <img loading="lazy" src={safeAbsoluteImageUrl(normalizeUploadUrl(block.url) || block.url)} alt={block.alt || ""} className="w-full rounded-md shadow-sm object-cover" />
           {block.caption && <figcaption className="text-sm text-gray-500 mt-2">{block.caption}</figcaption>}
         </figure>
       );
@@ -220,7 +274,7 @@ function BlockRenderer({ block }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 my-4">
           {(block.items || []).map((it, idx) => (
             <figure key={idx} className="rounded overflow-hidden">
-              <img loading="lazy" src={normalizeUploadUrl(it.url)} alt={it.alt || ""} className="w-full h-48 object-cover" />
+              <img loading="lazy" src={safeAbsoluteImageUrl(normalizeUploadUrl(it.url) || it.url)} alt={it.alt || ""} className="w-full h-48 object-cover" />
               {it.caption && <figcaption className="text-sm text-gray-500 mt-2 p-1">{it.caption}</figcaption>}
             </figure>
           ))}
@@ -348,7 +402,7 @@ function PreviewModal({ open, blogRef, onClose }) {
             <header>
               <h1 className="text-2xl sprada-heading font-bold">{blog.title}</h1>
               <div className="text-sm text-gray-600">{blog.author?.name || blog.author_name || "Author"} · {blog.published_at ? dayjs(blog.published_at).format("MMMM D, YYYY") : "Draft"}</div>
-              {blog.og_image && <div className="mt-4 rounded overflow-hidden"><img loading="lazy" src={normalizeUploadUrl(blog.og_image)} alt={blog.title} className="w-full h-64 object-cover rounded" /></div>}
+              {blog.og_image && <div className="mt-4 rounded overflow-hidden"><img loading="lazy" src={safeAbsoluteImageUrl(normalizeUploadUrl(blog.og_image) || blog.og_image)} alt={blog.title} className="w-full h-64 object-cover rounded" /></div>}
             </header>
 
             <section className="mt-6">
@@ -361,7 +415,7 @@ function PreviewModal({ open, blogRef, onClose }) {
 
             <footer className="mt-6 border-t pt-4">
               <div className="flex items-center gap-3">
-                {blog.author?.avatar && <img src={normalizeUploadUrl(blog.author.avatar)} alt={blog.author?.name || ""} className="w-12 h-12 rounded-full object-cover" />}
+                {blog.author?.avatar && <img src={safeAbsoluteImageUrl(normalizeUploadUrl(blog.author.avatar) || blog.author.avatar)} alt={blog.author?.name || ""} className="w-12 h-12 rounded-full object-cover" />}
                 <div>
                   <div className="font-semibold">{blog.author?.name || blog.author_name || ""}</div>
                   <div className="text-sm text-slate-600">{blog.author?.bio || blog.author_bio || ""}</div>
@@ -446,7 +500,7 @@ function BlogsAdmin() {
     try {
       const res = await apiGet(`/blogs?page=${page}&limit=${limit}&q=${encodeURIComponent(q)}`);
       const arr = (res && (res.blogs || res)) || [];
-      // Normalize image URLs for thumbnails
+      // Normalize image URLs for thumbnails (but use safeAbsoluteImageUrl when rendering)
       const normalized = (Array.isArray(arr) ? arr : []).map(b => ({
         ...b,
         image: normalizeUploadUrl(b.image || b.og_image || b.thumbnail || "")
@@ -565,7 +619,7 @@ function BlogsAdmin() {
               <article key={b.id} className="bg-white border rounded-2xl p-4 hover:shadow-md transition transform hover:-translate-y-1">
                 <div className="flex gap-4">
                   <div className="w-28 h-20 rounded-lg overflow-hidden bg-gray-50 flex items-center justify-center">
-                    {b.image ? <img src={normalizeUploadUrl(b.image)} alt={b.title} className="w-full h-full object-cover" /> : <div className="text-xs text-slate-400">No image</div>}
+                    {b.image ? <img src={safeAbsoluteImageUrl(normalizeUploadUrl(b.image) || b.image)} alt={b.title} className="w-full h-full object-cover" /> : <div className="text-xs text-slate-400">No image</div>}
                   </div>
                   <div className="flex-1 min-w-0">
                     <h3 className="sprada-heading font-medium text-slate-800 line-clamp-3">{b.title}</h3>
@@ -823,6 +877,14 @@ function BlogEditor({ blog, onClose, onSaved }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [form, editor, busy]);
 
+  // Normalize image fields for blog before save
+  function normalizeBlogBeforeSave(payload = {}) {
+    const out = { ...payload };
+    if (out.og_image !== undefined) out.og_image = safeAbsoluteImageUrl(out.og_image, "blogs");
+    // canonical_url and other fields left unchanged
+    return out;
+  }
+
   async function save() {
     try {
       if (!form.title || !String(form.title).trim()) { toast.error("Post title is required"); return; }
@@ -841,11 +903,13 @@ function BlogEditor({ blog, onClose, onSaved }) {
         is_published: !!form.is_published
       };
 
+      const safePayload = normalizeBlogBeforeSave(payload);
+
       if (form.id) {
-        await apiPut(`/blogs/${encodeURIComponent(form.id)}`, payload);
+        await apiPut(`/blogs/${encodeURIComponent(form.id)}`, safePayload);
         toast.success("Saved");
       } else {
-        await apiPost("/blogs", payload);
+        await apiPost("/blogs", safePayload);
         toast.success("Created");
       }
       onSaved && onSaved();
@@ -958,7 +1022,7 @@ function BlogEditor({ blog, onClose, onSaved }) {
                 {uploadedImages.length === 0 && <div className="text-slate-400 text-sm">No uploaded images yet</div>}
                 {uploadedImages.map((img, idx) => (
                   <div key={img.id ? `i-${img.id}` : `u-${idx}`} className="flex flex-col items-center gap-2">
-                    <img src={normalizeUploadUrl(img.url)} alt={`img-${idx}`} className="uploaded-thumb" />
+                    <img src={safeAbsoluteImageUrl(normalizeUploadUrl(img.url) || img.url)} alt={`img-${idx}`} className="uploaded-thumb" />
                     <div className="flex gap-1">
                       <button onClick={() => insertImageToEditor(img.url)} className="px-2 py-1 border rounded text-xs">Insert</button>
                       <button onClick={() => handleDeleteThumb(img)} className="px-2 py-1 border rounded text-xs text-red-600">Delete</button>
@@ -1224,7 +1288,7 @@ function BlogDetail({ blog, onClose, onChange }) {
               {images.length === 0 && <div className="text-slate-500">No images</div>}
               {images.map(img => (
                 <div key={img.id || img.url} className="flex items-center gap-2">
-                  <img src={normalizeUploadUrl(img.url)} alt={img.caption || ""} className="w-20 h-14 object-cover rounded" />
+                  <img src={safeAbsoluteImageUrl(normalizeUploadUrl(img.url) || img.url)} alt={img.caption || ""} className="w-20 h-14 object-cover rounded" />
                   <div className="flex-1">
                     <div className="text-sm">{img.caption || ""}</div>
                     <div className="text-xs text-slate-500">{img.created_at ? new Date(img.created_at).toLocaleString() : ""}</div>
