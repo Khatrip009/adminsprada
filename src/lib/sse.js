@@ -1,5 +1,5 @@
 // src/lib/sse.js
-const EVENTS_BASE = import.meta.env.VITE_EVENTS_BASE || import.meta.env.VITE_API_BASE || "http://localhost:4200";
+const EVENTS_BASE = import.meta.env.VITE_EVENTS_BASE || import.meta.env.VITE_API_BASE || "https://apisprada.exotech.co.in";
 export function createSSE(path, onMessage, onOpen, onError) {
   const url = `${EVENTS_BASE}${path}`;
   try {

@@ -1,18 +1,14 @@
 // src/components/LatestBlogs.jsx
 import React, { useEffect, useState } from "react";
+import { API_ORIGIN as LIB_API_ORIGIN } from "../lib/api";
 
 /**
  * Robust LatestBlogs.jsx
- * - Attempts API_BASE from import.meta.env.VITE_API_BASE (if set)
- * - If response content-type is not JSON, logs server HTML and tries fallback to relative /api (once)
- * - Shows latest `max` blogs but clamps to 5 (client enforces latest 5)
- * - likes_count from list, comments_count fallback fetch
- * - Stable image loading with local fallback
+ * - Uses API_ORIGIN from src/lib/api (which reads VITE_API_ORIGIN).
+ * - Falls back to relative /api if API_ORIGIN not set.
+ * - If response content-type is not JSON, logs server HTML and treats as failure.
+ * - Shows latest `max` blogs but clamps to 5.
  */
-
-const API_BASE = (typeof import.meta !== "undefined" && import.meta?.env?.VITE_API_BASE)
-  ? String(import.meta.env.VITE_API_BASE).replace(/\/$/, "")
-  : "";
 
 function niceDate(d) {
   try {
@@ -36,18 +32,16 @@ function BlogCard({ blog, fallbackSrc, apiBaseForComments }) {
   }, [blog.image, fallbackSrc]);
 
   useEffect(() => {
-    // fetch comments count only if not present
     if (commentsCount == null) {
       (async () => {
         try {
-          // prefer numeric id; if your list uses slug, adjust accordingly
-          const idOrSlug = encodeURIComponent(blog.id || blog.slug);
-          const url = `${apiBaseForComments || ""}/api/blogs/${idOrSlug}/comments`;
+          const idOrSlug = encodeURIComponent(blog.id || blog.slug || "");
+          const base = (apiBaseForComments || "").replace(/\/$/, "");
+          const url = base ? `${base}/api/blogs/${idOrSlug}/comments` : `/api/blogs/${idOrSlug}/comments`;
           const res = await fetch(url, { credentials: "include" });
           if (!res.ok) return setCommentsCount(0);
           const ct = (res.headers.get("content-type") || "").toLowerCase();
           if (!ct.includes("application/json")) {
-            // backend returned HTML — treat as 0 but log for debugging
             const text = await res.text();
             console.warn("[LatestBlogs] comments endpoint returned non-json:", url, text);
             setCommentsCount(0);
@@ -55,6 +49,7 @@ function BlogCard({ blog, fallbackSrc, apiBaseForComments }) {
           }
           const json = await res.json();
           if (json && Array.isArray(json.comments)) setCommentsCount(json.comments.length);
+          else if (Array.isArray(json)) setCommentsCount(json.length);
           else setCommentsCount(0);
         } catch (e) {
           console.error("[LatestBlogs] comments fetch err", e);
@@ -66,7 +61,7 @@ function BlogCard({ blog, fallbackSrc, apiBaseForComments }) {
   }, []); // run once per card
 
   return (
-    <a href={`/blog/${encodeURIComponent(blog.slug)}`} className="block group" aria-label={blog.title}>
+    <a href={`/blog/${encodeURIComponent(blog.slug || "")}`} className="block group" aria-label={blog.title}>
       <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100 hover:shadow-md transition-shadow duration-200">
         <div className="relative w-full pt-[56%] bg-gray-100">
           <img
@@ -132,8 +127,7 @@ function BlogCard({ blog, fallbackSrc, apiBaseForComments }) {
 }
 
 export default function LatestBlogs({ max = 5 }) {
-  // clamp to maximum of 5 regardless of prop passed
-  const maxToShow = Math.min(5, Math.max(1, Number(max || 5))); // ensure between 1 and 5
+  const maxToShow = Math.min(5, Math.max(1, Number(max || 5)));
   const [blogs, setBlogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -145,48 +139,44 @@ export default function LatestBlogs({ max = 5 }) {
     setLoading(true);
     setError("");
 
-    // start with API_BASE if provided, but we will fallback to relative /api once if content-type invalid
-    const baseCandidates = [];
-    if (API_BASE) baseCandidates.push(API_BASE);
-    baseCandidates.push(""); // relative fallback
+    // Build base candidates: prefer LIB_API_ORIGIN (reads VITE_API_ORIGIN), then relative fallback
+    const candidates = [];
+    if (LIB_API_ORIGIN) candidates.push(String(LIB_API_ORIGIN).replace(/\/$/, ""));
+    candidates.push(""); // relative
 
     (async () => {
       let lastErr = null;
-      for (let i = 0; i < baseCandidates.length && mounted; i++) {
-        const base = baseCandidates[i];
-        // use maxToShow for fetch limit to ensure server-side limit matches client
-        const url = `${base}/api/blogs?limit=${maxToShow}`.replace(/\/\/api/, '/api'); // ensures no double //
+      for (let i = 0; i < candidates.length && mounted; i++) {
+        const base = candidates[i];
+        const url = base ? `${base}/api/blogs?limit=${maxToShow}` : `/api/blogs?limit=${maxToShow}`;
+
         try {
           const res = await fetch(url, { credentials: "include" });
           const contentType = (res.headers.get("content-type") || "").toLowerCase();
 
           if (!res.ok) {
-            // capture server-response body for debugging if not json
             let detail = `${res.status} ${res.statusText}`;
             if (contentType.includes("application/json")) {
-              const j = await res.json();
+              const j = await res.json().catch(() => null);
               detail = j && (j.error || j.message) ? (j.error || j.message) : detail;
             } else {
-              const text = await res.text();
-              console.warn("[LatestBlogs] non-json error page", url, text);
+              const text = await res.text().catch(() => "");
+              console.warn("[LatestBlogs] non-json error page", url, text.slice(0, 800));
               detail = `unexpected_content_type(${res.status})`;
             }
             throw new Error(detail);
           }
 
           if (!contentType.includes("application/json")) {
-            // log HTML returned so user can diagnose (shows 404/index.html)
-            const text = await res.text();
-            console.warn("[LatestBlogs] expected JSON but got:", url, text);
+            const text = await res.text().catch(() => "");
+            console.warn("[LatestBlogs] expected JSON but got HTML/text from", url, text.slice(0, 800));
             throw new Error("unexpected_content_type");
           }
 
           const json = await res.json();
-          // support both { blogs: [...] } and direct array responses
           const arr = Array.isArray(json) ? json : (Array.isArray(json.blogs) ? json.blogs : null);
           if (!arr) throw new Error("invalid_json_structure");
 
-          // Ensure newest first client-side: sort by published_at (fallback created_at)
           const sorted = arr.slice().sort((a, b) => {
             const da = new Date(b.published_at || b.created_at).getTime() || 0;
             const db = new Date(a.published_at || a.created_at).getTime() || 0;
@@ -198,11 +188,10 @@ export default function LatestBlogs({ max = 5 }) {
             setLoading(false);
             setError("");
           }
-          return; // success, exit candidate loop
+          return;
         } catch (err) {
           lastErr = err;
-          console.warn("[LatestBlogs] load attempt failed for base:", base, err && err.message ? err.message : err);
-          // try next base candidate
+          console.warn("[LatestBlogs] attempt failed for base:", base || "(relative)", err && err.message ? err.message : err);
         }
       }
 
@@ -229,7 +218,7 @@ export default function LatestBlogs({ max = 5 }) {
 
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {Array.from({ length: 5 }).map((_, i) => (
+          {Array.from({ length: Math.max(1, Math.min(5, maxToShow)) }).map((_, i) => (
             <div key={i} className="bg-gray-50 rounded-2xl p-3 animate-pulse h-40" />
           ))}
         </div>
@@ -240,7 +229,7 @@ export default function LatestBlogs({ max = 5 }) {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {blogs.map((b) => (
-            <BlogCard key={b.id || b.slug} blog={b} fallbackSrc={fallbackSrc} apiBaseForComments={API_BASE || ""} />
+            <BlogCard key={b.id || b.slug} blog={b} fallbackSrc={fallbackSrc} apiBaseForComments={LIB_API_ORIGIN || ""} />
           ))}
         </div>
       )}

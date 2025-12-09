@@ -1,5 +1,5 @@
 // src/pages/BlogEditorPage.jsx
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -19,26 +19,9 @@ import {
   apiGet,
   apiPost,
   apiPut,
-  apiDelete,
   uploadFile,
   getBlogFlexible
 } from "../lib/api";
-
-/**
- * Blog Editor (block-first) - produces JSONB-friendly shape:
- *
- * {
- *   id, title, slug, excerpt, meta_title, meta_description, canonical_url, og_image, is_published,
- *   content: {
- *     blocks: [ { type: 'paragraph'|'heading'|'image'|'list'|'quote'|'code'|'gallery'|'cta'|'separator', ... } ],
- *     html: "<...>",
- *     markdown: "..."
- *   }
- * }
- *
- * This page shows editor UI for block-level editing, a WYSIWYG importer,
- * image uploads, reorder/delete of blocks, inline preview modal and "open preview" link.
- */
 
 /* -------------------------
    Tiny helpers & styles
@@ -56,6 +39,8 @@ function ensureFontsAndStyles() {
       .btn-primary { background: #0f6b5a; color: white; padding: 8px 14px; border-radius: 8px; border: none; cursor: pointer; }
       .btn-ghost { background: white; border: 1px solid #e6e6e6; padding: 8px 12px; border-radius: 8px; cursor: pointer; }
       .block-box { border: 1px solid #eef2f7; padding: 12px; border-radius: 8px; background: #ffffff; }
+      /* TipTap content base */
+      .tiptap-content { min-height: 160px; }
     `;
     document.head.appendChild(s);
   }
@@ -86,26 +71,25 @@ function estimateReadingTime(text) {
 
 /* -------------------------
    Simple block -> html renderer
-   (used to build content.html for DB)
    ------------------------- */
 function blocksToHTML(blocks = []) {
   const escape = s => DOMPurify.sanitize(String(s || ""));
   return blocks.map(b => {
     switch (b.type) {
       case "heading":
-        return `<h${b.level||2}>${escape(b.text)}</h${b.level||2}>`;
+        return `<h${b.level || 2}>${escape(b.text)}</h${b.level || 2}>`;
       case "paragraph":
         return `<p>${escape(b.text)}</p>`;
       case "image":
-        return `<figure><img src="${escape(b.url)}" alt="${escape(b.alt||"")}" /><figcaption>${escape(b.caption||"")}</figcaption></figure>`;
+        return `<figure><img src="${escape(b.url)}" alt="${escape(b.alt || "")}" /><figcaption>${escape(b.caption || "")}</figcaption></figure>`;
       case "list":
-        return b.ordered ? `<ol>${(b.items||[]).map(i=>`<li>${escape(i)}</li>`).join("")}</ol>` : `<ul>${(b.items||[]).map(i=>`<li>${escape(i)}</li>`).join("")}</ul>`;
+        return b.ordered ? `<ol>${(b.items || []).map(i => `<li>${escape(i)}</li>`).join("")}</ol>` : `<ul>${(b.items || []).map(i => `<li>${escape(i)}</li>`).join("")}</ul>`;
       case "quote":
-        return `<blockquote><p>${escape(b.text)}</p>${b.author?`<footer>${escape(b.author)}</footer>`:""}</blockquote>`;
+        return `<blockquote><p>${escape(b.text)}</p>${b.author ? `<footer>${escape(b.author)}</footer>` : ""}</blockquote>`;
       case "code":
         return `<pre><code>${escape(b.code)}</code></pre>`;
       case "gallery":
-        return `<div class="gallery">${(b.items||[]).map(it=>`<img src="${escape(it.url)}" alt="${escape(it.alt||"")}" />`).join("")}</div>`;
+        return `<div class="gallery">${(b.items || []).map(it => `<img src="${escape(it.url)}" alt="${escape(it.alt || "")}" />`).join("")}</div>`;
       case "cta":
         return `<div class="cta"><a href="${escape(b.url)}" class="btn">${escape(b.text)}</a></div>`;
       case "separator":
@@ -135,8 +119,7 @@ function newBlock(type) {
 }
 
 /* -------------------------
-   Preview component — professional corporate style
-   (re-used for inline preview and for generating html)
+   Preview component
    ------------------------- */
 function BlogPreview({ blog }) {
   if (!blog) return null;
@@ -146,7 +129,7 @@ function BlogPreview({ blog }) {
       <header className="mb-6">
         <h1 className="sprada-heading text-3xl font-bold">{blog.title}</h1>
         <div className="text-sm text-slate-600 mb-3">{blog.author?.name || "Author"} • {blog.published_at ? new Date(blog.published_at).toLocaleDateString() : "Draft"}</div>
-        {blog.og_image && <img src={normalizeUploadUrl(blog.og_image)} alt="" className="w-full h-72 object-cover rounded-lg mb-4" />}
+        {blog.og_image && <img src={normalizeUploadUrl(blog.og_image)} alt="" className="w-full h-72 object-cover rounded-lg mb-4" loading="lazy" />}
         {blog.excerpt && <p className="text-slate-700">{blog.excerpt}</p>}
       </header>
 
@@ -198,7 +181,7 @@ function BlockView({ block }) {
     case "code":
       return <pre className="bg-gray-900 text-gray-100 rounded-md p-3 overflow-auto my-4"><code>{block.code}</code></pre>;
     case "gallery":
-      return <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 my-4">{(block.items || []).map((it, i) => <img key={i} src={normalizeUploadUrl(it.url)} alt={it.alt||""} className="w-full h-48 object-cover rounded" />)}</div>;
+      return <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 my-4">{(block.items || []).map((it, i) => <img key={i} loading="lazy" src={normalizeUploadUrl(it.url)} alt={it.alt || ""} className="w-full h-48 object-cover rounded" />)}</div>;
     case "cta":
       return <div className="my-6"><a href={block.url} className="inline-block px-6 py-3 rounded bg-[#0f6b5a] text-white">{block.text}</a></div>;
     case "separator":
@@ -242,18 +225,15 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
   const [autosaveStatus, setAutosaveStatus] = useState("idle");
 
   /* TipTap for freeform import */
-  const starterInst = StarterKit;
-  const imageInst = Image;
-  const linkInst = Link;
-  const placeholderInst = Placeholder;
-
   const editor = useEditor({
-    extensions: [starterInst, imageInst, linkInst, placeholderInst.configure ? placeholderInst.configure({ placeholder: "Use this to paste content then Import" }) : placeholderInst],
+    extensions: [
+      StarterKit,
+      Image,
+      Link,
+      Placeholder.configure ? Placeholder.configure({ placeholder: "Use this to paste content then Import" }) : Placeholder
+    ],
     content: "",
-    editorProps: { attributes: { class: "prose lg:prose-lg tiptap-content" } },
-    onUpdate: ({ editor }) => {
-      // we don't sync editor into blocks automatically, it's used as "import source"
-    }
+    editorProps: { attributes: { class: "prose lg:prose-lg tiptap-content" } }
   });
 
   useEffect(() => {
@@ -375,23 +355,19 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
       if (!url) return;
       setUploadedImages(prev => [{ id: null, url, caption: "" }, ...prev]);
       if (i !== undefined && i !== null) {
-        // insert into a gallery at block index i if it's a gallery block
         setForm(prev => {
           const blocks = [...(prev.content.blocks || [])];
           const blk = blocks[i];
           if (blk && blk.type === "gallery") {
-            blk.items = [{ url, alt: "" }, ...(blk.items||[])];
+            blk.items = [{ url, alt: "" }, ...(blk.items || [])];
             blocks[i] = blk;
           } else {
-            // otherwise add image block after i
-            blocks.splice(i+1, 0, { type: "image", url, alt: "", caption: "" });
+            blocks.splice(i + 1, 0, { type: "image", url, alt: "", caption: "" });
           }
           return { ...prev, content: { ...prev.content, blocks } };
         });
       } else {
-        // append an image block
         addBlock("image");
-        // small delay then set url to last block
         setTimeout(() => {
           setForm(prev => {
             const blocks = [...(prev.content.blocks || [])];
@@ -420,7 +396,7 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
     const html = editor.getHTML();
     const text = (editor.getText && editor.getText()) || "";
     const p = { type: "paragraph", text: DOMPurify.sanitize(text) };
-    setForm(prev => ({ ...prev, content: { ...prev.content, blocks: [...(prev.content.blocks||[]), p] } }));
+    setForm(prev => ({ ...prev, content: { ...prev.content, blocks: [...(prev.content.blocks || []), p] } }));
     toast.success("Imported content as paragraph block");
     setDirty(true);
   }
@@ -449,18 +425,15 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
           setAutosaveStatus("saved");
           setDirty(false);
         } else {
-          // create a draft (not published)
           try {
             const created = await apiPost("/blogs", { ...payload, is_published: false });
             const idVal = created && (created.blog?.id || created.id || (created.blog || null));
             if (idVal) {
               setForm(prev => ({ ...prev, id: idVal }));
-              // try to persist pending images (best-effort)
             }
             setAutosaveStatus("saved");
             setDirty(false);
           } catch (e) {
-            // fallback to localStorage
             try {
               const snap = { ...form, content: payloadContent, updated_at: new Date().toISOString() };
               localStorage.setItem(localDraftKey, JSON.stringify(snap));
@@ -575,7 +548,7 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
         const url = await handleUploadFileAsUrl(f);
         if (url) {
           setUploadedImages(prev => [{ id: null, url, caption: "" }, ...prev]);
-          setForm(prev => ({ ...prev, content: { ...prev.content, blocks: [...(prev.content.blocks||[]), { type: "image", url, alt: "", caption: "" }] } }));
+          setForm(prev => ({ ...prev, content: { ...prev.content, blocks: [...(prev.content.blocks || []), { type: "image", url, alt: "", caption: "" }] } }));
         }
       }
     }
@@ -589,7 +562,7 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
               handleUploadFileAsUrl(f).then(url => {
                 if (url) {
                   setUploadedImages(prev => [{ id: null, url, caption: "" }, ...prev]);
-                  setForm(prev => ({ ...prev, content: { ...prev.content, blocks: [...(prev.content.blocks||[]), { type: "image", url, alt: "", caption: "" }] } }));
+                  setForm(prev => ({ ...prev, content: { ...prev.content, blocks: [...(prev.content.blocks || []), { type: "image", url, alt: "", caption: "" }] } }));
                 }
               });
               break;
@@ -618,10 +591,29 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
   return (
     <div className="min-h-screen sprada-ui bg-gray-50">
       <Toaster position="bottom-right" />
+
       <div className="flex">
-        <Sidebar user={JSON.parse(localStorage.getItem("user") || "null")} className="w-72" />
-        <main className="flex-1 p-6">
-          <div className="flex items-center justify-between mb-6">
+        {/* Sidebar hidden on small screens; shows on large (lg) and above */}
+        <div className="hidden lg:block w-72">
+          <Sidebar user={JSON.parse(localStorage.getItem("user") || "null")} className="w-72" />
+        </div>
+
+        <main className="flex-1 p-4 md:p-6 lg:p-8">
+          {/* Mobile top bar (visible on small/medium screens) */}
+          <div className="flex items-center justify-between mb-4 lg:hidden">
+            <div className="flex items-center gap-3">
+              <img src={LOGO} alt="logo" className="w-28 h-auto object-contain" />
+              <div>
+                <div className="text-sm font-semibold sprada-heading text-[#0f6b5a]">{pageMode === "edit" ? "Edit Blog" : "Create Blog"}</div>
+                <div className="text-xs text-slate-500">Block-first editor — JSONB + HTML/markdown</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button className="px-2 py-1 border rounded text-sm" onClick={() => navigate("/dashboard/blogs")}>Back</button>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between mb-6 hidden lg:flex">
             <div className="flex items-center gap-4">
               <img src={LOGO} className="w-36 object-contain" alt="logo" />
               <div>
@@ -632,24 +624,35 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
 
             <div className="flex items-center gap-3">
               <div className="text-xs text-slate-500">Signed in as</div>
-              <div className="px-3 py-2 bg-white border rounded-lg text-sm shadow-sm">{(JSON.parse(localStorage.getItem("user")||"null"))?.name || "Admin"}</div>
+              <div className="px-3 py-2 bg-white border rounded-lg text-sm shadow-sm">{(JSON.parse(localStorage.getItem("user") || "null"))?.name || "Admin"}</div>
             </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr,340px] gap-6">
             {/* left: editor */}
-            <section className="block-panel p-6 bg-white rounded-lg shadow-sm">
-              <input value={form.title || ""} onChange={e => { setForm(prev => ({ ...prev, title: e.target.value })); if (!form.slug) setForm(prev => ({ ...prev, slug: generateSlugFromTitle(e.target.value) })); setDirty(true); }} placeholder="Title" className="w-full text-3xl font-semibold border-0 outline-none mb-3" />
+            <section className="block-panel p-4 sm:p-6 bg-white rounded-lg shadow-sm overflow-hidden">
+              <input
+                value={form.title || ""}
+                onChange={e => {
+                  const val = e.target.value;
+                  setForm(prev => ({ ...prev, title: val }));
+                  if (!form.slug) setForm(prev => ({ ...prev, slug: generateSlugFromTitle(val) }));
+                  setDirty(true);
+                }}
+                placeholder="Title"
+                aria-label="Title"
+                className="w-full text-2xl sm:text-3xl font-semibold border-0 outline-none mb-3"
+              />
 
-              <div className="flex items-center gap-3 text-sm text-slate-500 mb-4">
-                <div>/{form.slug || "slug-here"}</div>
+              <div className="flex items-center gap-3 text-sm text-slate-500 mb-4 flex-wrap">
+                <div className="truncate">/{form.slug || "slug-here"}</div>
                 <div>•</div>
                 <div>{form.is_published ? `Published ${form.published_at ? new Date(form.published_at).toLocaleDateString() : ""}` : "Draft"}</div>
                 <div className="ml-auto text-xs text-slate-400">Autosave: {autosaveStatus}</div>
               </div>
 
               <div className="mb-4">
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex flex-wrap items-center gap-2 mb-2">
                   <button className="btn-primary" onClick={() => saveHandler({})} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
                   <button className="btn-ghost" onClick={() => saveHandler({ publish: true })}>Save & Publish</button>
                   <button className="btn-ghost" onClick={publishToggle}>{form.is_published ? "Unpublish" : "Publish"}</button>
@@ -669,14 +672,17 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
                     <button className="px-2 py-1 border rounded text-sm" onClick={() => importFromEditor()}>Import</button>
                   </div>
                 </div>
-                <div className="rounded bg-white p-2" style={{ minHeight: 120 }}>
-                  <EditorContent editor={editor} />
+                <div className="rounded bg-white p-2">
+                  {/* TipTap area: make scrollable on small viewports */}
+                  <div className="min-h-[160px] max-h-[260px] overflow-auto">
+                    <EditorContent editor={editor} />
+                  </div>
                 </div>
               </div>
 
               {/* Blocks list */}
               <div>
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
                   <h4 className="font-semibold">Content blocks</h4>
                   <div className="flex items-center gap-2">
                     <select id="add-block-select" className="border rounded px-2 py-1 text-sm" onChange={(e) => { const v = e.target.value; if (!v) return; addBlock(v); e.target.selectedIndex = 0; }}>
@@ -695,7 +701,7 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
                   </div>
                 </div>
 
-                <div className="space-y-3">
+                <div className="space-y-3 max-h-[60vh] lg:max-h-none overflow-auto pr-2">
                   {(form.content.blocks || []).map((blk, i) => (
                     <div key={i} className="block-box">
                       <div className="flex items-start gap-3">
@@ -703,16 +709,16 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
                           <div className="flex items-center justify-between mb-2">
                             <div className="text-sm font-medium">{blk.type.toUpperCase()} {blk.type === "heading" ? `H${blk.level}` : ""}</div>
                             <div className="flex items-center gap-2">
-                              <button onClick={() => moveBlock(i, -1)} className="px-2 py-1 border rounded text-xs">↑</button>
-                              <button onClick={() => moveBlock(i, 1)} className="px-2 py-1 border rounded text-xs">↓</button>
-                              <button onClick={() => removeBlock(i)} className="px-2 py-1 border rounded text-xs text-red-600">Delete</button>
+                              <button onClick={() => moveBlock(i, -1)} className="px-2 py-1 border rounded text-xs" aria-label={`Move block ${i + 1} up`}>↑</button>
+                              <button onClick={() => moveBlock(i, 1)} className="px-2 py-1 border rounded text-xs" aria-label={`Move block ${i + 1} down`}>↓</button>
+                              <button onClick={() => removeBlock(i)} className="px-2 py-1 border rounded text-xs text-red-600" aria-label={`Delete block ${i + 1}`}>Delete</button>
                             </div>
                           </div>
 
-                          {/* Block specific editors */}
+                          {/* Block editors */}
                           {blk.type === "heading" && (
                             <div>
-                              <input value={blk.text || ""} onChange={e => updateBlock(i, { text: e.target.value })} placeholder="Heading text" className="w-full border rounded px-2 py-1 mb-2" />
+                              <input value={blk.text || ""} onChange={e => updateBlock(i, { text: e.target.value })} placeholder="Heading text" aria-label="Heading text" className="w-full border rounded px-2 py-1 mb-2" />
                               <div className="text-xs small-muted">Level:
                                 <select value={blk.level || 2} onChange={e => updateBlock(i, { level: Number(e.target.value) })} className="ml-2 border rounded px-2 py-1 text-sm">
                                   <option value={1}>1</option>
@@ -725,17 +731,17 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
                           )}
 
                           {blk.type === "paragraph" && (
-                            <textarea value={blk.text || ""} onChange={e => updateBlock(i, { text: e.target.value })} className="w-full border rounded p-2" rows={4} placeholder="Paragraph text" />
+                            <textarea value={blk.text || ""} onChange={e => updateBlock(i, { text: e.target.value })} className="w-full border rounded p-2" rows={4} placeholder="Paragraph text" aria-label="Paragraph text" />
                           )}
 
                           {blk.type === "image" && (
                             <div className="grid grid-cols-1 gap-2">
                               <div className="flex items-center gap-2">
-                                <input value={blk.url || ""} onChange={e => updateBlock(i, { url: e.target.value })} placeholder="Image URL" className="w-full border rounded px-2 py-1" />
+                                <input value={blk.url || ""} onChange={e => updateBlock(i, { url: e.target.value })} placeholder="Image URL" className="w-full border rounded px-2 py-1" aria-label="Image URL" />
                                 <button className="px-2 py-1 border rounded" onClick={() => handleImageFileAndInsert(i)}>Upload</button>
                               </div>
-                              <input value={blk.caption || ""} onChange={e => updateBlock(i, { caption: e.target.value })} placeholder="Caption (optional)" className="w-full border rounded px-2 py-1" />
-                              <input value={blk.alt || ""} onChange={e => updateBlock(i, { alt: e.target.value })} placeholder="Alt text (accessibility)" className="w-full border rounded px-2 py-1" />
+                              <input value={blk.caption || ""} onChange={e => updateBlock(i, { caption: e.target.value })} placeholder="Caption (optional)" className="w-full border rounded px-2 py-1" aria-label="Image caption" />
+                              <input value={blk.alt || ""} onChange={e => updateBlock(i, { alt: e.target.value })} placeholder="Alt text (accessibility)" className="w-full border rounded px-2 py-1" aria-label="Image alt text" />
                             </div>
                           )}
 
@@ -743,23 +749,23 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
                             <div>
                               <div className="flex items-center gap-2 mb-2">
                                 <label className="text-xs small-muted">Ordered</label>
-                                <input type="checkbox" checked={blk.ordered || false} onChange={e => updateBlock(i, { ordered: e.target.checked })} />
+                                <input type="checkbox" checked={blk.ordered || false} onChange={e => updateBlock(i, { ordered: e.target.checked })} aria-label="Ordered list" />
                               </div>
-                              <textarea value={(blk.items || []).join("\n")} onChange={e => updateBlock(i, { items: e.target.value.split("\n") })} className="w-full border rounded p-2" rows={4} placeholder="One item per line" />
+                              <textarea value={(blk.items || []).join("\n")} onChange={e => updateBlock(i, { items: e.target.value.split("\n") })} className="w-full border rounded p-2" rows={4} placeholder="One item per line" aria-label="List items" />
                             </div>
                           )}
 
                           {blk.type === "quote" && (
                             <div>
-                              <textarea value={blk.text || ""} onChange={e => updateBlock(i, { text: e.target.value })} className="w-full border rounded p-2 mb-2" rows={3} placeholder="Quote text" />
-                              <input value={blk.author || ""} onChange={e => updateBlock(i, { author: e.target.value })} placeholder="Author (optional)" className="w-full border rounded px-2 py-1" />
+                              <textarea value={blk.text || ""} onChange={e => updateBlock(i, { text: e.target.value })} className="w-full border rounded p-2 mb-2" rows={3} placeholder="Quote text" aria-label="Quote text" />
+                              <input value={blk.author || ""} onChange={e => updateBlock(i, { author: e.target.value })} placeholder="Author (optional)" className="w-full border rounded px-2 py-1" aria-label="Quote author" />
                             </div>
                           )}
 
                           {blk.type === "code" && (
                             <div>
-                              <textarea value={blk.code || ""} onChange={e => updateBlock(i, { code: e.target.value })} className="w-full border rounded p-2" rows={6} placeholder="Code snippet" />
-                              <input value={blk.language || ""} onChange={e => updateBlock(i, { language: e.target.value })} placeholder="Language (optional)" className="w-full border rounded px-2 py-1 mt-2" />
+                              <textarea value={blk.code || ""} onChange={e => updateBlock(i, { code: e.target.value })} className="w-full border rounded p-2" rows={6} placeholder="Code snippet" aria-label="Code snippet" />
+                              <input value={blk.language || ""} onChange={e => updateBlock(i, { language: e.target.value })} placeholder="Language (optional)" className="w-full border rounded px-2 py-1 mt-2" aria-label="Code language" />
                             </div>
                           )}
 
@@ -768,7 +774,7 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
                               <div className="flex items-center gap-2 mb-2">
                                 <button className="px-2 py-1 border rounded" onClick={() => handleImageFileAndInsert(i)}>Upload image to gallery</button>
                                 <button className="px-2 py-1 border rounded" onClick={() => {
-                                  const items = [...(blk.items||[]), { url: "", alt: "" }];
+                                  const items = [...(blk.items || []), { url: "", alt: "" }];
                                   updateBlock(i, { items });
                                 }}>Add placeholder</button>
                               </div>
@@ -776,14 +782,14 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
                                 {(blk.items || []).map((it, idx) => (
                                   <div key={idx} className="border rounded p-2">
                                     <input value={it.url || ""} onChange={e => {
-                                      const items = [...(blk.items||[])]; items[idx] = { ...items[idx], url: e.target.value }; updateBlock(i, { items });
-                                    }} placeholder="Image URL" className="w-full border rounded px-2 py-1 mb-1" />
+                                      const items = [...(blk.items || [])]; items[idx] = { ...items[idx], url: e.target.value }; updateBlock(i, { items });
+                                    }} placeholder="Image URL" className="w-full border rounded px-2 py-1 mb-1" aria-label={`Gallery image URL ${idx + 1}`} />
                                     <input value={it.alt || ""} onChange={e => {
-                                      const items = [...(blk.items||[])]; items[idx] = { ...items[idx], alt: e.target.value }; updateBlock(i, { items });
-                                    }} placeholder="Alt text" className="w-full border rounded px-2 py-1 mb-1" />
+                                      const items = [...(blk.items || [])]; items[idx] = { ...items[idx], alt: e.target.value }; updateBlock(i, { items });
+                                    }} placeholder="Alt text" className="w-full border rounded px-2 py-1 mb-1" aria-label={`Gallery image alt ${idx + 1}`} />
                                     <div className="flex gap-2">
                                       <button onClick={() => {
-                                        const items = [...(blk.items||[])]; items.splice(idx, 1); updateBlock(i, { items });
+                                        const items = [...(blk.items || [])]; items.splice(idx, 1); updateBlock(i, { items });
                                       }} className="px-2 py-1 border rounded text-xs text-red-600">Remove</button>
                                     </div>
                                   </div>
@@ -794,8 +800,8 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
 
                           {blk.type === "cta" && (
                             <div>
-                              <input value={blk.text || ""} onChange={e => updateBlock(i, { text: e.target.value })} placeholder="Button text" className="w-full border rounded px-2 py-1 mb-2" />
-                              <input value={blk.url || ""} onChange={e => updateBlock(i, { url: e.target.value })} placeholder="URL" className="w-full border rounded px-2 py-1" />
+                              <input value={blk.text || ""} onChange={e => updateBlock(i, { text: e.target.value })} placeholder="Button text" className="w-full border rounded px-2 py-1 mb-2" aria-label="CTA text" />
+                              <input value={blk.url || ""} onChange={e => updateBlock(i, { url: e.target.value })} placeholder="URL" className="w-full border rounded px-2 py-1" aria-label="CTA URL" />
                             </div>
                           )}
 
@@ -806,53 +812,57 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
                   ))}
                 </div>
               </div>
-
             </section>
 
             {/* right: metadata */}
             <aside className="block-panel p-4 bg-white rounded-lg shadow-sm">
               <div className="mb-3">
                 <label className="text-xs small-muted">Slug</label>
-                <input value={form.slug || ""} onChange={e => { setForm(prev => ({ ...prev, slug: e.target.value })); setDirty(true); }} className="w-full border rounded px-2 py-2" />
+                <input value={form.slug || ""} onChange={e => { setForm(prev => ({ ...prev, slug: e.target.value })); setDirty(true); }} aria-label="Slug" className="w-full border rounded px-2 py-2" />
               </div>
 
               <div className="mb-3">
                 <label className="text-xs small-muted">Excerpt</label>
-                <textarea value={form.excerpt || ""} onChange={e => { setForm(prev => ({ ...prev, excerpt: e.target.value })); setDirty(true); }} className="w-full border rounded px-2 py-2" rows={3} />
+                <textarea value={form.excerpt || ""} onChange={e => { setForm(prev => ({ ...prev, excerpt: e.target.value })); setDirty(true); }} aria-label="Excerpt" className="w-full border rounded px-2 py-2" rows={3} />
               </div>
 
               <div className="mb-3">
                 <label className="text-xs small-muted">Featured image (og)</label>
-                <input value={form.og_image || ""} onChange={e => setForm(prev => ({ ...prev, og_image: e.target.value }))} className="w-full border rounded px-2 py-2" />
+                <input value={form.og_image || ""} onChange={e => setForm(prev => ({ ...prev, og_image: e.target.value }))} aria-label="Featured image URL" className="w-full border rounded px-2 py-2" />
                 <div className="flex gap-2 mt-2">
-                  <button className="btn-ghost w-full" onClick={async () => {
-                    const url = await handleUploadFileAsUrl(await (await new Promise(resolve => {
-                      const inp = document.createElement("input");
-                      inp.type = "file";
-                      inp.accept = "image/*";
-                      inp.onchange = e => resolve(e.target.files?.[0]);
-                      inp.click();
-                    })));
-                    if (url) setForm(prev => ({ ...prev, og_image: url }));
-                  }}>Upload</button>
+                  <button
+                    className="btn-ghost w-full"
+                    onClick={async () => {
+                      const url = await handleUploadFileAsUrl(await (await new Promise(resolve => {
+                        const inp = document.createElement("input");
+                        inp.type = "file";
+                        inp.accept = "image/*";
+                        inp.onchange = e => resolve(e.target.files?.[0]);
+                        inp.click();
+                      })));
+                      if (url) setForm(prev => ({ ...prev, og_image: url }));
+                    }}
+                  >
+                    Upload
+                  </button>
                   <button className="btn-ghost w-full" onClick={() => setForm(prev => ({ ...prev, og_image: "" }))}>Remove</button>
                 </div>
-                {form.og_image && <img src={normalizeUploadUrl(form.og_image)} alt="og" className="w-full h-24 object-cover rounded mt-2" />}
+                {form.og_image && <img src={normalizeUploadUrl(form.og_image)} alt="og" className="w-full h-24 object-cover rounded mt-2" loading="lazy" />}
               </div>
 
               <div className="mb-3">
                 <label className="text-xs small-muted">Meta title</label>
-                <input value={form.meta_title || ""} onChange={e => setForm(prev => ({ ...prev, meta_title: e.target.value }))} className="w-full border rounded px-2 py-2" />
+                <input value={form.meta_title || ""} onChange={e => setForm(prev => ({ ...prev, meta_title: e.target.value }))} aria-label="Meta title" className="w-full border rounded px-2 py-2" />
               </div>
 
               <div className="mb-3">
                 <label className="text-xs small-muted">Meta description</label>
-                <textarea value={form.meta_description || ""} onChange={e => setForm(prev => ({ ...prev, meta_description: e.target.value }))} className="w-full border rounded px-2 py-2" rows={3} />
+                <textarea value={form.meta_description || ""} onChange={e => setForm(prev => ({ ...prev, meta_description: e.target.value }))} aria-label="Meta description" className="w-full border rounded px-2 py-2" rows={3} />
               </div>
 
               <div className="mb-3">
                 <label className="text-xs small-muted">Canonical URL</label>
-                <input value={form.canonical_url || ""} onChange={e => setForm(prev => ({ ...prev, canonical_url: e.target.value }))} className="w-full border rounded px-2 py-2" />
+                <input value={form.canonical_url || ""} onChange={e => setForm(prev => ({ ...prev, canonical_url: e.target.value }))} aria-label="Canonical URL" className="w-full border rounded px-2 py-2" />
               </div>
 
               <div className="mb-3">
@@ -885,7 +895,6 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
               </div>
             </div>
           )}
-
         </main>
       </div>
     </div>

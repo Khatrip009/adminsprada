@@ -285,7 +285,35 @@ export async function getProducts(arg = 20) {
 export const getRecentProducts = (limit = 8) => getProducts(limit);
 
 /* -------- Blogs helpers -------- */
-export const getBlogs = (limit = 10) => apiGet(`/blogs?limit=${limit}`);
+/* -------- Blogs helpers (defensive) -------- */
+// Original (simple): export const getBlogs = (limit = 10) => apiGet(`/blogs?limit=${limit}`);
+// Replace with defensive version that logs raw response data on failure
+export async function getBlogs(limit = 10) {
+  const path = `/blogs?limit=${encodeURIComponent(limit)}`;
+  try {
+    const data = await apiGet(path);
+    // Normalize shapes: return array when the endpoint returns { blogs: [...] } or array directly
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    if (data.blogs && Array.isArray(data.blogs)) return data.blogs;
+    // maybe server returns { ok: true, data: { blogs: [...] } }
+    if (data.data && Array.isArray(data.data.blogs)) return data.data.blogs;
+    // Single object -> wrap
+    if (data.id || data.title) return [data];
+    // fallback: return empty and log
+    console.warn("[api.getBlogs] unexpected response shape:", data);
+    return [];
+  } catch (err) {
+    // err.data may contain raw text (HTML error page) — log it for debugging
+    console.error("[api.getBlogs] failed to fetch blogs:", err);
+    if (err && err.data) {
+      console.debug("[api.getBlogs] raw response data:", err.data);
+    }
+    // return empty list so UI degrades gracefully
+    return [];
+  }
+}
+
 export const getRecentBlogs = (limit = 6) => getBlogs(limit);
 
 export async function getBlogFlexible(blogId) {

@@ -1,6 +1,7 @@
 // src/App.jsx
 import React, { useRef, useEffect } from "react";
 import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "react-hot-toast";
 
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
@@ -21,7 +22,7 @@ function RequireAuth({ children }) {
   return children;
 }
 
-// DashboardLayout (unchanged)
+// DashboardLayout (unchanged logic)
 function DashboardLayout({ children }) {
   const authCtx = useAuth();
   const user = authCtx?.user || JSON.parse(localStorage.getItem("user") || "null");
@@ -70,55 +71,79 @@ function DashboardLayout({ children }) {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <HashRouter>
+    <HashRouter>
+      {/* AuthProvider inside router so provider can use navigation if needed */}
+      <AuthProvider>
+        {/* Global toaster for centralized toast messages */}
+        <Toaster position="top-right" />
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
 
-          <Route path="/dashboard" element={
-            <RequireAuth>
-              <DashboardLayout><Dashboard /></DashboardLayout>
-            </RequireAuth>
-          } />
+          <Route
+            path="/dashboard"
+            element={
+              <RequireAuth>
+                <DashboardLayout><Dashboard /></DashboardLayout>
+              </RequireAuth>
+            }
+          />
 
-          <Route path="/dashboard/products" element={
-            <RequireAuth>
-              <DashboardLayout><Products /></DashboardLayout>
-            </RequireAuth>
-          } />
+          <Route
+            path="/dashboard/products"
+            element={
+              <RequireAuth>
+                <DashboardLayout><Products /></DashboardLayout>
+              </RequireAuth>
+            }
+          />
 
-          <Route path="/dashboard/blogs" element={
-            <RequireAuth>
-              <DashboardLayout><Blogs /></DashboardLayout>
-            </RequireAuth>
-          } />
-          <Route path="/dashboard/blogs/new" element={
-            <RequireAuth>
-              <DashboardLayout><BlogEditorPage mode="new" /></DashboardLayout>
-            </RequireAuth>
-          } />
-          <Route path="/dashboard/blogs/edit/:id" element={
-            <RequireAuth>
-              <DashboardLayout><BlogEditorPage mode="edit" /></DashboardLayout>
-            </RequireAuth>
-          } />
+          <Route
+            path="/dashboard/blogs"
+            element={
+              <RequireAuth>
+                <DashboardLayout><Blogs /></DashboardLayout>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/dashboard/blogs/new"
+            element={
+              <RequireAuth>
+                <DashboardLayout><BlogEditorPage mode="new" /></DashboardLayout>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/dashboard/blogs/edit/:id"
+            element={
+              <RequireAuth>
+                <DashboardLayout><BlogEditorPage mode="edit" /></DashboardLayout>
+              </RequireAuth>
+            }
+          />
 
-          <Route path="/dashboard/leads" element={
-            <RequireAuth>
-              <DashboardLayout><LeadsPage /></DashboardLayout>
-            </RequireAuth>
-          } />
-          <Route path="/dashboard/users" element={
-            <RequireAuth>
-              <DashboardLayout><UserPage /></DashboardLayout>
-            </RequireAuth>
-          } />
+          <Route
+            path="/dashboard/leads"
+            element={
+              <RequireAuth>
+                <DashboardLayout><LeadsPage /></DashboardLayout>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/dashboard/users"
+            element={
+              <RequireAuth>
+                <DashboardLayout><UserPage /></DashboardLayout>
+              </RequireAuth>
+            }
+          />
 
           <Route path="/error" element={<ErrorPage status={500} title="Server error" message="Something went wrong on the server." />} />
           <Route path="*" element={<ErrorPage status={404} title="Page not found" message="The page you're looking for doesn't exist." />} />
         </Routes>
-      </HashRouter>
-    </AuthProvider>
+      </AuthProvider>
+    </HashRouter>
   );
 }

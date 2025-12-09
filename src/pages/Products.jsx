@@ -75,24 +75,17 @@ function ensureFontsInjected() {
    Utility: robust categories loader (tries include_counts)
    --------------------------- */
 async function loadCategoriesWithCounts() {
-  // try a few ways depending on how getCategories is implemented
   try {
-    // prefer an options object (common wrapper signature)
     const r1 = await getCategories({ include_counts: true });
     if (Array.isArray(r1)) return r1;
     if (r1?.categories) return r1.categories;
-  } catch (e) {
-    // ignore and try alternative
-  }
+  } catch (e) {}
 
   try {
-    // some libs accept query string
     const r2 = await getCategories("?include_counts=true");
     if (Array.isArray(r2)) return r2;
     if (r2?.categories) return r2.categories;
-  } catch (e) {
-    // fallback
-  }
+  } catch (e) {}
 
   try {
     const r3 = await getCategories();
@@ -132,7 +125,6 @@ function TradeBadge({ trade }) {
       </span>
     );
   }
-  // both / default
   return (
     <span
       className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-800"
@@ -146,8 +138,6 @@ function TradeBadge({ trade }) {
 
 /* ---------------------------
    Image helpers (new, defensive)
-   - Prevent attempts to load local FS paths like /mnt/ or C:\ which cause 404s.
-   - Convert safe relative /uploads paths to absolute using toAbsoluteImageUrl().
    --------------------------- */
 
 function isLocalFilesystemPath(value) {
@@ -160,20 +150,11 @@ function isLocalFilesystemPath(value) {
   return false;
 }
 
-/**
- * Return an absolute public URL for image or null if it's unsafe (local fs).
- * Uses toAbsoluteImageUrl() for conversion and also tolerates already-absolute URLs.
- */
 function safeAbsoluteImageUrl(raw) {
   if (!raw || typeof raw !== "string") return null;
-  // If it's already absolute and http(s) - keep it
   if (/^https?:\/\//i.test(raw)) return raw;
-  // If it's a data URL, keep it
   if (/^data:/i.test(raw)) return raw;
-  // If it looks like local FS path, block it (return null)
   if (isLocalFilesystemPath(raw)) return null;
-
-  // Convert relative/partial uploads paths
   try {
     const abs = toAbsoluteImageUrl(raw);
     if (!abs) return null;
@@ -184,10 +165,6 @@ function safeAbsoluteImageUrl(raw) {
   }
 }
 
-/**
- * Normalize product payload image fields before save.
- * Ensures og_image / primary_image / metadata.og_image are absolute URLs or null.
- */
 function normalizeBeforeSave(payload = {}) {
   const out = { ...payload };
 
@@ -196,17 +173,14 @@ function normalizeBeforeSave(payload = {}) {
     if (isLocalFilesystemPath(v)) return null;
     if (/^https?:\/\//i.test(v)) return v;
     if (/^\/(?:src\/)?uploads\//i.test(v)) {
-      // prefix API origin
       return `${API_ORIGIN}${v}`;
     }
     if (/^(?:src\/)?uploads\//i.test(v)) {
       return `${API_ORIGIN}/${v.replace(/^\/+/, "")}`;
     }
-    // bare filename -> assume uploads/<space>/<filename>
     if (!v.startsWith("/")) {
       return `${API_ORIGIN}/uploads/${space}/${v.replace(/^\/+/, "")}`;
     }
-    // fallback prefix
     return `${API_ORIGIN}${v}`;
   }
 
@@ -227,17 +201,44 @@ export default function ProductsPage() {
     ensureFontsInjected();
   }, []);
   const user = JSON.parse(localStorage.getItem("user") || "null");
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   return (
     <div className="min-h-screen flex bg-[color:var(--sprada-surface)] text-slate-800">
       <Toaster position="top-right" />
-      <Sidebar user={user} className="w-72" />
-      <main className="flex-1 p-6 max-w-full">
+
+      {/* Desktop sidebar */}
+      <aside className="hidden md:block md:w-72">
+        <Sidebar user={user} className="w-72" />
+      </aside>
+
+      {/* Mobile sidebar drawer */}
+      {mobileSidebarOpen && (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setMobileSidebarOpen(false)} />
+          <div className="absolute left-0 top-0 bottom-0 w-72 bg-white shadow-lg p-4 overflow-auto">
+            <Sidebar user={user} />
+          </div>
+        </div>
+      )}
+
+      <main className="flex-1 p-4 md:p-6 max-w-full">
         <header className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-4">
+            {/* Mobile hamburger */}
+            <button
+              className="md:hidden p-2 rounded-lg border mr-1"
+              aria-label="Open menu"
+              onClick={() => setMobileSidebarOpen(true)}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+
             <div className="flex items-center gap-4">
-              <img src={LOGO} alt="Sprada" className="w-36 object-contain" />
-              <div>
+              <img src={LOGO} alt="Sprada" className="w-24 md:w-36 object-contain" />
+              <div className="hidden sm:block">
                 <h1 className="text-2xl sprada-heading font-semibold text-[color:var(--sprada-accent)]">Products</h1>
                 <div className="text-sm text-[color:var(--sprada-muted)]">Manage products, categories & image gallery</div>
               </div>
@@ -245,12 +246,12 @@ export default function ProductsPage() {
           </div>
 
           <div className="flex items-center gap-3">
-            <div className="text-xs text-[color:var(--sprada-muted)]">Signed in as</div>
+            <div className="text-xs text-[color:var(--sprada-muted)] hidden sm:block">Signed in as</div>
             <div className="px-3 py-2 bg-white border rounded-lg shadow-sm text-sm">{user?.name || user?.username || "Admin"}</div>
           </div>
         </header>
 
-        <div className="bg-[color:var(--sprada-card)] rounded-2xl shadow-[var(--shadow-1)] p-5">
+        <div className="bg-[color:var(--sprada-card)] rounded-2xl shadow-[var(--shadow-1)] p-4 md:p-5">
           <ProductsAdmin />
         </div>
       </main>
@@ -259,8 +260,7 @@ export default function ProductsPage() {
 }
 
 /* ---------------------------
-   ProductsAdmin
-   - Handles product list + inline category manager (CRUD)
+   ProductsAdmin (responsive tweaks)
    --------------------------- */
 function ProductsAdmin() {
   const [products, setProducts] = useState([]);
@@ -270,7 +270,7 @@ function ProductsAdmin() {
   const [q, setQ] = useState("");
   const [order, setOrder] = useState("created_at.desc");
   const [categoryFilter, setCategoryFilter] = useState("");
-  const [tradeTypeFilter, setTradeTypeFilter] = useState(""); // new filter: import/export/both
+  const [tradeTypeFilter, setTradeTypeFilter] = useState("");
   const [loading, setLoading] = useState(false);
 
   const [editing, setEditing] = useState(null);
@@ -280,11 +280,9 @@ function ProductsAdmin() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  // load categories (with counts) on mount
   async function refreshCategories() {
     try {
       const c = await loadCategoriesWithCounts();
-      // normalize shape: ensure product_count present and trade_type default
       const normalized = (c || []).map((x) => {
         return {
           ...x,
@@ -301,9 +299,7 @@ function ProductsAdmin() {
     }
   }
 
-  useEffect(() => {
-    refreshCategories();
-  }, []);
+  useEffect(() => { refreshCategories(); }, []);
 
   async function load({ pageArg = page, limitArg = limit, qArg = q, categoryArg = categoryFilter, orderArg = order, tradeTypeArg = tradeTypeFilter } = {}) {
     setLoading(true);
@@ -336,10 +332,7 @@ function ProductsAdmin() {
     }
   }
 
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, limit, q, categoryFilter, order, tradeTypeFilter]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, limit, q, categoryFilter, order, tradeTypeFilter]);
 
   function openCreate() {
     setEditing({ title: "", slug: "", price: 0, currency: "USD", moq: 1, trade_type: null });
@@ -395,14 +388,11 @@ function ProductsAdmin() {
 
   return (
     <div>
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-6">
-        <div className="flex items-center gap-3 w-full md:w-auto">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+        <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap">
           <select
             value={categoryFilter}
-            onChange={(e) => {
-              setCategoryFilter(e.target.value);
-              setPage(1);
-            }}
+            onChange={(e) => { setCategoryFilter(e.target.value); setPage(1); }}
             className="border rounded-lg px-3 py-2 transition-colors hover:shadow-sm bg-white"
             aria-label="Filter by category"
           >
@@ -430,9 +420,10 @@ function ProductsAdmin() {
             placeholder="Search products..."
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            className="border rounded-lg px-3 py-2 w-56 transition-shadow focus:shadow-outline"
+            className="border rounded-lg px-3 py-2 w-full sm:w-56 transition-shadow focus:shadow-outline"
             aria-label="Search products"
           />
+
           <select value={order} onChange={(e) => setOrder(e.target.value)} className="border rounded-lg px-3 py-2 bg-white" aria-label="Sort products">
             <option value="created_at.desc">Newest</option>
             <option value="created_at.asc">Oldest</option>
@@ -448,8 +439,11 @@ function ProductsAdmin() {
           <button onClick={openCreate} className="px-4 py-2 bg-[color:var(--sprada-accent)] text-white rounded-lg shadow hover:shadow-md transition transform active:scale-95">
             Add new
           </button>
-          <button onClick={exportCSV} className="px-3 py-2 border rounded-lg hover:bg-slate-50 transition">
+          <button onClick={exportCSV} className="px-3 py-2 border rounded-lg hover:bg-slate-50 transition hidden sm:inline-block">
             Export CSV
+          </button>
+          <button onClick={exportCSV} className="px-3 py-2 border rounded-lg hover:bg-slate-50 transition sm:hidden">
+            CSV
           </button>
         </div>
       </div>
@@ -457,7 +451,7 @@ function ProductsAdmin() {
       {message && <div className="text-green-700 mb-3">{message}</div>}
       {error && <div className="text-red-600 mb-3">{error}</div>}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {loading
           ? Array.from({ length: limit }).map((_, i) => <div key={i} className="h-44 bg-gray-100 animate-pulse rounded-2xl" />)
           : products.length === 0
@@ -472,9 +466,7 @@ function ProductsAdmin() {
                     <h3 className="sprada-heading font-medium text-slate-800 line-clamp-2">{p.title}</h3>
                     <p className="text-xs text-[color:var(--sprada-muted)] mt-1 line-clamp-2">{p.short_description}</p>
                     <div className="mt-3 flex items-center gap-3">
-                      {/* category name */}
                       <div className="text-xs text-[color:var(--sprada-muted)]">{p.category?.name || "—"}</div>
-                      {/* trade badge */}
                       <TradeBadge trade={p.trade_type || p.effective_trade_type || "both"} />
                     </div>
                   </div>
@@ -492,7 +484,7 @@ function ProductsAdmin() {
         }
       </div>
 
-      <div className="mt-6 flex items-center justify-between">
+      <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-3">
         <div>
           <button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="px-3 py-2 border rounded-lg mr-2">Prev</button>
           <button onClick={() => setPage((p) => p + 1)} className="px-3 py-2 border rounded-lg">Next</button>
@@ -526,9 +518,7 @@ function ProductsAdmin() {
 }
 
 /* -------------------------
-   ProductForm component
-   - polished: error handling, toasts, accessible buttons
-   - includes trade_type selection (import/export/both)
+   ProductForm component (responsive modals)
    ------------------------- */
 function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
   const [form, setForm] = useState({ ...(product || {}) });
@@ -537,7 +527,6 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
   const [err, setErr] = useState("");
 
   useEffect(() => {
-    // populate form; ensure trade_type defaults sensibly
     const initial = {
       ...(product || {}),
       trade_type: product.trade_type ?? product.effective_trade_type ?? null,
@@ -569,7 +558,6 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
       }
       setBusy(true);
       let res;
-      // normalize image fields before sending
       const payloadPrepared = normalizeBeforeSave({
         ...form,
         trade_type: form.trade_type ?? null,
@@ -598,10 +586,8 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
     setErr(""); setBusy(true);
     const uploadingToastId = toast.loading("Uploading image…");
     try {
-      // ensure images upload to the products space so they are served under /uploads/products/...
       const publicUrlRaw = await uploadFile(file, { space: "products" });
       const publicUrl = normalizeUploadUrl(publicUrlRaw || "");
-      // create product image record
       const resp = await createProductImage({ product_id: form.id, url: publicUrl, filename: file.name, is_primary: images.length === 0 });
       const created = resp && (resp.image || resp.product_image || (resp.id ? resp : null)) || null;
       if (created) {
@@ -661,19 +647,19 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center p-6">
+    <div className="fixed inset-0 z-50 flex items-start justify-center p-4 md:p-6">
       <div className="absolute inset-0 bg-black/30" onClick={() => { if (!busy) onClose(); }} />
-      <div role="dialog" aria-modal="true" aria-label={form.id ? "Edit Product" : "Create Product"} className="relative bg-white rounded-2xl shadow-lg w-full max-w-3xl p-5 z-10">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-4">
-            <img src={LOGO} alt="Sprada" className="w-28 object-contain" />
+      <div role="dialog" aria-modal="true" aria-label={form.id ? "Edit Product" : "Create Product"} className="relative bg-white rounded-2xl shadow-lg w-full max-w-full md:max-w-3xl p-4 md:p-5 z-10 mx-2 md:mx-0 overflow-auto max-h-[92vh]">
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            <img src={LOGO} alt="Sprada" className="w-20 md:w-28 object-contain" />
             <div>
               <h3 className="sprada-heading font-semibold text-lg">{form.id ? "Edit Product" : "Create Product"}</h3>
               {form.id && <div className="text-xs text-[color:var(--sprada-muted)]">ID: {String(form.id).slice(0, 8)}</div>}
             </div>
           </div>
-          <div>
-            <button className="px-3 py-2 border rounded-lg mr-2" onClick={() => { if (!busy) onClose(); }}>Close</button>
+          <div className="flex items-center gap-2">
+            <button className="px-3 py-2 border rounded-lg" onClick={() => { if (!busy) onClose(); }}>Close</button>
             <button className={clsx("px-4 py-2 text-white rounded-lg", busy ? "bg-slate-400" : "bg-[color:var(--sprada-accent)]")} onClick={save} disabled={busy}>
               {busy ? "Saving…" : "Save"}
             </button>
@@ -724,7 +710,7 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
           <textarea value={form.description || ""} onChange={(e) => setField("description", e.target.value)} className="w-full border rounded-lg px-3 py-2" rows={4} />
         </div>
 
-        <div className="mt-4 flex items-center gap-4">
+        <div className="mt-4 flex items-center gap-4 flex-wrap">
           <div className="w-28 h-28 bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center">
             {form.og_image ? <img src={safeAbsoluteImageUrl(normalizeUploadUrl(form.og_image))} alt="" className="w-full h-full object-cover" /> : <div className="text-xs text-[color:var(--sprada-muted)]">No image</div>}
           </div>
@@ -738,7 +724,7 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-3 gap-3">
+        <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-3">
           {images.map((img) => (
             <div key={img.id || img.url} className="border rounded-lg p-2 relative hover:shadow-sm transition">
               <img src={safeAbsoluteImageUrl(normalizeUploadUrl(img.url || img.path || img.public_url || ""))} alt="" className="w-full h-28 object-cover rounded" />
@@ -755,9 +741,7 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
 }
 
 /* -------------------------
-   CategoriesManager (inline panel)
-   - Single-page categories CRUD: create, edit, delete
-   - Now supports trade_type field
+   CategoriesManager (responsive)
    ------------------------- */
 function CategoriesManager({ initialCategories = [], onClose, onChange }) {
   const [categories, setCategories] = useState(initialCategories || []);
@@ -805,15 +789,13 @@ function CategoriesManager({ initialCategories = [], onClose, onChange }) {
           trade_type: editing.trade_type || "both",
         };
         const created = await apiPost("/categories", payload);
-        // api may return { category } or the created row; handle both
         const createdRow = (created && created.category) ? created.category : created;
         if (createdRow && createdRow.id) setCategories((prev) => [createdRow, ...prev]);
         else {
-          // fallback: refresh from server
           try {
             const c = await loadCategoriesWithCounts();
             setCategories(Array.isArray(c) ? c : categories);
-          } catch (e) { /* ignore */ }
+          } catch (e) { }
         }
         setMsg("Created");
         toast.success("Category created");
@@ -846,12 +828,12 @@ function CategoriesManager({ initialCategories = [], onClose, onChange }) {
   }
 
   return (
-    <div className="fixed inset-0 z-60 flex items-start justify-center p-6">
+    <div className="fixed inset-0 z-60 flex items-start justify-center p-4 md:p-6">
       <div className="absolute inset-0 bg-black/30" onClick={() => { if (!busy) onClose(); }} />
-      <div role="dialog" className="relative bg-white rounded-2xl shadow-lg w-full max-w-4xl p-6 z-10">
+      <div role="dialog" className="relative bg-white rounded-2xl shadow-lg w-full max-w-4xl p-4 md:p-6 z-10 overflow-auto max-h-[92vh]">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-4">
-            <img src={LOGO} alt="Sprada" className="w-28 object-contain" />
+            <img src={LOGO} alt="Sprada" className="w-20 md:w-28 object-contain" />
             <h3 className="sprada-heading font-semibold text-lg">Manage Categories</h3>
           </div>
           <div>

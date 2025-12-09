@@ -31,7 +31,7 @@ import {
 } from "../lib/api";
 
 /* ---------------------------
-   Helpers for TipTap & URLs
+   Utility & helper functions
    --------------------------- */
 
 function createExtensionInstanceSafely(extOrModule) {
@@ -75,11 +75,7 @@ function dedupeExtensionsByName(instances) {
   return out;
 }
 
-/**
- * Normalize upload URLs so dev absolute backend URLs
- * (http://localhost:4200/uploads/...) -> relative /uploads/...
- * which lets Vite dev server proxy handle them.
- */
+/* Normalize dev absolute backend upload URLs -> relative for dev proxy */
 function normalizeUploadUrl(url) {
   if (!url) return url;
   try {
@@ -90,15 +86,11 @@ function normalizeUploadUrl(url) {
     if (u.origin === window.location.origin) return u.href;
     return url;
   } catch (e) {
-    return url; // likely already relative
+    return url;
   }
 }
 
-/* ---------------------------
-   Defensive image helpers (added)
-   - block local filesystem paths from being requested
-   - convert relative /uploads and uploads/... and bare filenames into absolute public URLs
-   --------------------------- */
+/* Defensive image helpers to avoid local filesystem leaks and produce absolute URLs */
 function isLocalFilesystemPath(value) {
   if (!value || typeof value !== "string") return false;
   const v = value.trim().toLowerCase();
@@ -109,27 +101,19 @@ function isLocalFilesystemPath(value) {
   if (v.includes("\\users\\")) return true;
   return false;
 }
-
 function safeAbsoluteImageUrl(raw, space = "blogs") {
   if (!raw || typeof raw !== "string") return null;
   const val = raw.trim();
   if (!val) return null;
-  // allow data URLs
   if (/^data:/i.test(val)) return val;
-  // allow http(s)
   if (/^https?:\/\//i.test(val)) return val;
-  // block local FS
   if (isLocalFilesystemPath(val)) return null;
 
-  // use toAbsoluteImageUrl if available (handles /uploads and uploads paths)
   try {
     const abs = toAbsoluteImageUrl ? toAbsoluteImageUrl(val) : null;
     if (abs && !/\/mnt\//i.test(abs)) return abs;
-  } catch (e) {
-    // fallback below
-  }
+  } catch (e) { /* ignore */ }
 
-  // fallback rules similar to front-end lib
   try {
     if (/^\/(?:src\/)?uploads\//i.test(val)) {
       return `${API_ORIGIN}${val}`;
@@ -146,15 +130,13 @@ function safeAbsoluteImageUrl(raw, space = "blogs") {
   }
 }
 
-/* ---------------------------
-   Small UI: Confirm Modal
-   --------------------------- */
+/* Small modal confirm */
 function ConfirmModal({ open, title, message, onCancel, onConfirm, confirmLabel = "Confirm" }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onCancel} />
-      <div className="relative bg-white rounded-lg p-5 w-full max-w-md shadow-lg">
+      <div className="relative bg-white rounded-lg p-5 w-full max-w-md shadow-lg z-[121]">
         <h3 className="font-semibold text-lg">{title}</h3>
         <p className="text-sm text-slate-600 mt-2">{message}</p>
         <div className="mt-4 flex justify-end gap-3">
@@ -166,9 +148,7 @@ function ConfirmModal({ open, title, message, onCancel, onConfirm, confirmLabel 
   );
 }
 
-/* ---------------------------
-   Utility: inject fonts + tiny styles
-   --------------------------- */
+/* inject fonts + small runtime styles */
 function ensureFontsAndStyles() {
   if (typeof document === "undefined") return;
   if (!document.getElementById("sprada-fonts")) {
@@ -184,37 +164,27 @@ function ensureFontsAndStyles() {
     s.innerHTML = `
       .sprada-heading { font-family: "Roboto Slab", serif; }
       .sprada-ui { font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto; }
-      .editor-shell { min-height: 260px; position: relative; }
-      .tiptap-content img { max-width: 100%; height: auto; border-radius: 6px; }
-      .line-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-      .editor-guide { position: absolute; right: 12px; top: 12px; width: 260px; background: rgba(15,107,90,0.96); color: white; padding: 12px; border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.18); font-size: 13px; z-index: 40; line-height: 1.3; }
-      .editor-guide h4 { margin: 0 0 6px 0; font-weight: 600; font-size: 14px; }
-      .editor-guide button { background: transparent; border: 1px solid rgba(255,255,255,0.18); color: white; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
-      .editor-guide .tip { margin-top: 8px; opacity: 0.95; font-size: 12px }
       .uploaded-thumb { width: 90px; height: 62px; object-fit: cover; border-radius: 6px; border: 1px solid #e6e6e6; }
+      .line-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
     `;
     document.head.appendChild(s);
   }
 }
 
-/* ===========================
-   Helper: Slug generator
-   =========================== */
+/* Slug generator */
 function generateSlugFromTitle(title) {
   if (!title) return "";
   return String(title)
     .toLowerCase()
     .trim()
-    .replace(/[\u2018\u2019\u201C\u201D]/g, "") // smart quotes
-    .replace(/[^\w\s-]/g, "") // remove non-word chars
-    .replace(/\s+/g, "-") // spaces -> hyphens
-    .replace(/-+/g, "-") // collapse multiple hyphens
-    .replace(/^-+|-+$/g, ""); // trim hyphens
+    .replace(/[\u2018\u2019\u201C\u201D]/g, "")
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
-/* ===========================
-   Small Block Renderer (used by preview modal)
-   =========================== */
+/* Inline text renderer that preserves [label](url) links */
 function renderInlineText(text = "") {
   if (!text) return null;
   const parts = [];
@@ -225,7 +195,7 @@ function renderInlineText(text = "") {
   while ((m = re.exec(text)) !== null) {
     if (m.index > lastIndex) parts.push(text.slice(lastIndex, m.index));
     parts.push(
-      <a key={`a-${i++}`} href={m[2]} target={m[2].startsWith("http") ? "_blank" : "_self"} rel="noopener noreferrer" className="text-blue-600 underline">
+      <a key={`a-${i++}`} href={m[2]} target={m[2].startsWith("http") ? "_blank" : "_self"} rel="noopener noreferrer" className="text-sky-600 hover:underline">
         {m[1]}
       </a>
     );
@@ -235,6 +205,7 @@ function renderInlineText(text = "") {
   return parts;
 }
 
+/* Block renderer for previews and details */
 function BlockRenderer({ block }) {
   if (!block) return null;
   switch (block.type) {
@@ -266,9 +237,7 @@ function BlockRenderer({ block }) {
         <ul className="list-disc list-inside my-3 space-y-1">{(block.items || []).map((it, i) => <li key={i}>{renderInlineText(it)}</li>)}</ul>
       );
     case "code":
-      return (
-        <pre className="bg-gray-900 text-gray-100 rounded-md p-3 overflow-auto my-4"><code>{block.code}</code></pre>
-      );
+      return <pre className="bg-gray-900 text-gray-100 rounded-md p-3 overflow-auto my-4"><code>{block.code}</code></pre>;
     case "gallery":
       return (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 my-4">
@@ -303,7 +272,6 @@ function BlockRenderer({ block }) {
    PreviewModal - inline blog preview inside dashboard
    =========================== */
 function PreviewModal({ open, blogRef, onClose }) {
-  // blogRef may be the minimal blog object from the list (id/slug/title/og_image/published_at)
   const [loading, setLoading] = useState(false);
   const [blog, setBlog] = useState(null);
   const [error, setError] = useState(null);
@@ -320,27 +288,22 @@ function PreviewModal({ open, blogRef, onClose }) {
         if (!blogRef) throw new Error("missing blog");
         const idOrSlug = blogRef.slug || blogRef.id;
         if (!idOrSlug) throw new Error("missing id/slug");
-        // attempt preview fetch (backend should honor preview=true when authenticated)
         const path = `/blogs/${encodeURIComponent(idOrSlug)}?preview=true`;
         const res = await apiGet(path);
-        // Normalize potential shapes:
-        const candidate = res?.blog || res?.data?.blog || res?.data || res?.blog || res;
+        const candidate = res?.blog || res?.data || res;
         if (!mounted) return;
+
         if (!candidate || (!candidate.content && !candidate.title)) {
-          // fallback: try slug endpoint without preview param
           try {
             const r2 = await apiGet(`/blogs/slug/${encodeURIComponent(idOrSlug)}?preview=true`);
             const c2 = r2?.blog || r2?.data || r2;
-            if (c2 && (c2.content || c2.title)) {
-              setBlog(c2);
-              setLoading(false);
-              return;
-            }
-          } catch (_) { /* ignore */ }
+            if (c2 && (c2.content || c2.title)) { setBlog(c2); setLoading(false); return; }
+          } catch (_) {}
           setError("Preview not available");
           setLoading(false);
           return;
         }
+
         setBlog(candidate);
         setLoading(false);
       } catch (err) {
@@ -358,10 +321,10 @@ function PreviewModal({ open, blogRef, onClose }) {
 
   if (!open) return null;
 
-  return (
-    <div className="fixed inset-0 z-60 flex items-start justify-center p-6">
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 z-[130] flex items-start justify-center p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-6xl p-6 z-10 overflow-auto max-h-[90vh]">
+      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-5xl p-6 z-[131] overflow-auto max-h-[90vh]">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-4">
             <img src={LOGO} alt="Sprada" className="w-28 object-contain" />
@@ -370,8 +333,8 @@ function PreviewModal({ open, blogRef, onClose }) {
               <div className="text-sm text-slate-500">{blogRef?.excerpt || ""}</div>
             </div>
           </div>
-          <div>
-            <button onClick={onClose} className="px-3 py-2 border rounded-lg mr-2">Close</button>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-3 py-2 border rounded-lg">Close</button>
             <button onClick={() => window.open(blogRef?.canonical_url || (blogRef?.slug ? `${window.location.origin}/blog/${blogRef.slug}` : null), "_blank")} className="px-3 py-2 border rounded-lg">Open on site</button>
           </div>
         </div>
@@ -394,7 +357,6 @@ function PreviewModal({ open, blogRef, onClose }) {
 
         {!loading && blog && (
           <article className="prose max-w-none">
-            {/* preview banner */}
             <div className="mb-3 rounded-md bg-yellow-50 border border-yellow-200 p-2 text-yellow-800">
               <strong>Preview</strong> — viewing post as admin (may be unpublished).
             </div>
@@ -425,23 +387,45 @@ function PreviewModal({ open, blogRef, onClose }) {
           </article>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
 /* ===========================
-   Main Pages (BlogsPage + BlogsAdmin)
+   BlogsPage (main exported component)
    =========================== */
 export default function BlogsPage() {
   useEffect(() => ensureFontsAndStyles(), []);
   const user = JSON.parse(localStorage.getItem("user") || "null");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
     <div className="min-h-screen flex bg-gray-50 sprada-ui">
-      <Sidebar user={user} className="w-72" />
-      <main className="flex-1 p-6">
+      {/* Sidebar for large screens */}
+      <div className="hidden lg:block w-72">
+        <Sidebar user={user} className="w-72" />
+      </div>
+
+      {/* Mobile sidebar drawer */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setSidebarOpen(false)} />
+          <div className="absolute left-0 top-0 bottom-0 w-72 bg-white p-4 overflow-auto">
+            <Sidebar user={user} className="w-72" />
+            <div className="mt-4">
+              <button onClick={() => setSidebarOpen(false)} className="px-3 py-2 border rounded">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <main className="flex-1 p-4 md:p-6 lg:p-8">
         <header className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-5">
+          <div className="flex items-center gap-4">
+            <button aria-label="Open menu" onClick={() => setSidebarOpen(true)} className="lg:hidden px-2 py-2 border rounded">
+              ☰
+            </button>
             <img src={LOGO} alt="Sprada" className="w-36 object-contain" />
             <div>
               <h1 className="sprada-heading text-2xl text-[#0f6b5a] font-semibold">Blog Manager</h1>
@@ -450,7 +434,7 @@ export default function BlogsPage() {
           </div>
 
           <div className="flex items-center gap-3">
-            <div className="text-xs text-slate-500">Signed in as</div>
+            <div className="text-xs text-slate-500 hidden sm:block">Signed in as</div>
             <div className="px-3 py-2 bg-white border rounded-lg text-sm shadow-sm">{user?.name || user?.username || "Admin"}</div>
           </div>
         </header>
@@ -500,7 +484,6 @@ function BlogsAdmin() {
     try {
       const res = await apiGet(`/blogs?page=${page}&limit=${limit}&q=${encodeURIComponent(q)}`);
       const arr = (res && (res.blogs || res)) || [];
-      // Normalize image URLs for thumbnails (but use safeAbsoluteImageUrl when rendering)
       const normalized = (Array.isArray(arr) ? arr : []).map(b => ({
         ...b,
         image: normalizeUploadUrl(b.image || b.og_image || b.thumbnail || "")
@@ -520,31 +503,22 @@ function BlogsAdmin() {
   }
   function openEdit(b) {
     const key = b?.slug || b?.id;
-    if (!key) {
-      toast.error("Cannot edit: missing slug/id");
-      return;
-    }
-    // match your editor routing; uses 'edit' route with slug/id
+    if (!key) { toast.error("Cannot edit: missing slug/id"); return; }
     navigate(`/dashboard/blogs/edit/${encodeURIComponent(key)}`);
   }
 
   function openDetail(b) { setSelected(b); setDetailOpen(true); }
 
-  // INLINE PREVIEW: open modal and pass minimal blog ref
   function openPreview(b) {
     if (!b) return;
     setPreviewBlogRef(b);
     setPreviewOpen(true);
   }
 
-  // OLD openView still kept — opens public site in new tab (retained)
   function openView(b) {
     if (!b) return;
     let url = b.canonical_url || (b.slug ? `${window.location.origin}/blog/${b.slug}` : (b.id ? `${window.location.origin}/blog/${b.id}` : null));
-    if (!url) {
-      toast.error("Cannot open: no slug or canonical URL available");
-      return;
-    }
+    if (!url) { toast.error("Cannot open: no slug or canonical URL available"); return; }
     if (!b.published_at) {
       const u = new URL(url, window.location.origin);
       if (!u.searchParams.has("preview")) u.searchParams.set("preview", "true");
@@ -597,34 +571,29 @@ function BlogsAdmin() {
             onKeyDown={e => { if (e.key === "Enter") load(); }}
             placeholder="Search title or excerpt..."
             className="border rounded-lg px-3 py-2 w-full md:w-80"
+            aria-label="Search blogs"
           />
           <button onClick={load} className="px-3 py-2 border rounded-lg">Search</button>
         </div>
 
         <div className="flex items-center gap-3">
-         <button
-          onClick={() => navigate("/dashboard/blogs/new")}
-          className="px-4 py-2 bg-[#0f6b5a] text-white rounded-lg shadow-sm"
-        >
-          New Blog
-        </button>
-
+          <button onClick={openNew} className="px-4 py-2 bg-[#0f6b5a] text-white rounded-lg shadow-sm">New Blog</button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {loading ? Array.from({ length: limit }).map((_, i) => <div key={i} className="h-44 bg-gray-100 animate-pulse rounded-2xl" />) :
           (blogs.length === 0 ? <div className="text-slate-500">No blogs yet</div> :
             blogs.map(b => (
               <article key={b.id} className="bg-white border rounded-2xl p-4 hover:shadow-md transition transform hover:-translate-y-1">
                 <div className="flex gap-4">
                   <div className="w-28 h-20 rounded-lg overflow-hidden bg-gray-50 flex items-center justify-center">
-                    {b.image ? <img src={safeAbsoluteImageUrl(normalizeUploadUrl(b.image) || b.image)} alt={b.title} className="w-full h-full object-cover" /> : <div className="text-xs text-slate-400">No image</div>}
+                    {b.image ? <img loading="lazy" src={safeAbsoluteImageUrl(normalizeUploadUrl(b.image) || b.image)} alt={b.title} className="w-full h-full object-cover" /> : <div className="text-xs text-slate-400">No image</div>}
                   </div>
                   <div className="flex-1 min-w-0">
                     <h3 className="sprada-heading font-medium text-slate-800 line-clamp-3">{b.title}</h3>
                     <p className="text-xs text-slate-500 mt-1 line-clamp-3">{b.excerpt}</p>
-                    <div className="mt-2 text-xs text-slate-600 flex items-center gap-3">
+                    <div className="mt-2 text-xs text-slate-600 flex flex-wrap items-center gap-3">
                       <span>{b.published_at ? (new Date(b.published_at)).toLocaleDateString() : "Draft"}</span>
                       <span>•</span>
                       <span>{b.likes_count ?? 0} likes</span>
@@ -634,21 +603,11 @@ function BlogsAdmin() {
                   </div>
                 </div>
 
-                <div className="mt-4 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => openEdit(b)}
-                      className="px-3 py-1 text-xs border rounded hover:bg-slate-50"
-                    >
-                      Edit
-                    </button>
-
-                    {/* INLINE PREVIEW button */}
+                <div className="mt-4 flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button onClick={() => openEdit(b)} className="px-3 py-1 text-xs border rounded hover:bg-slate-50">Edit</button>
                     <button onClick={() => openPreview(b)} className="px-3 py-1 text-xs border rounded bg-white hover:bg-slate-50">Preview</button>
-
-                    {/* keep public view too */}
                     <button onClick={() => openView(b)} className="px-3 py-1 text-xs border rounded">Open</button>
-
                     <button onClick={() => openDetail(b)} className="px-3 py-1 text-xs border rounded">Details</button>
                   </div>
                   <div className="flex items-center gap-2">
@@ -662,7 +621,7 @@ function BlogsAdmin() {
         }
       </div>
 
-      <div className="mt-6 flex items-center justify-between">
+      <div className="mt-6 flex items-center justify-between gap-4 flex-wrap">
         <div>
           <button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))} className="px-3 py-2 border rounded-lg mr-2">Prev</button>
           <button onClick={() => setPage(p => p + 1)} className="px-3 py-2 border rounded-lg">Next</button>
@@ -689,15 +648,13 @@ function BlogsAdmin() {
         onConfirm={() => confirm.onConfirm && confirm.onConfirm()}
       />
 
-      {/* Preview modal */}
       {previewOpen && <PreviewModal open={previewOpen} blogRef={previewBlogRef} onClose={() => { setPreviewOpen(false); setPreviewBlogRef(null); }} />}
     </div>
   );
 }
 
 /* ===========================
-   BlogEditor modal component
-   (uses TipTap — same safe init as before)
+   BlogEditor modal (used by admin) - simplified and responsive
    =========================== */
 function BlogEditor({ blog, onClose, onSaved }) {
   const navigate = useNavigate();
@@ -706,44 +663,32 @@ function BlogEditor({ blog, onClose, onSaved }) {
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState("wysiwyg");
   const fileInputRef = useRef(null);
-  const [showGuide, setShowGuide] = useState(true);
-  const [guideVisible, setGuideVisible] = useState(false);
-  const [slugTouched, setSlugTouched] = useState(false);
   const [uploadedImages, setUploadedImages] = useState([]);
 
   useEffect(() => {
     setForm({ ...(blog || {}) });
-    setSlugTouched(false);
     (async () => {
       if (blog && blog.id) {
         try {
           let r = null;
-          try {
-            r = await apiGet(`/blog-images?blogId=${encodeURIComponent(blog.id)}`);
-          } catch (err) {
-            try { r = await apiGet(`/blog-images?blog_id=${encodeURIComponent(blog.id)}`); } catch (err2) { r = null; }
-          }
+          try { r = await apiGet(`/blog-images?blogId=${encodeURIComponent(blog.id)}`); } catch (err) { try { r = await apiGet(`/blog-images?blog_id=${encodeURIComponent(blog.id)}`); } catch (_) { r = null; } }
           const arr = (r && (r.images || r)) || [];
           const mapped = arr.map(it => ({ id: it.id, url: normalizeUploadUrl(it.url || it.public_url || it.path || it.address || "") }));
           setUploadedImages(mapped);
-        } catch (e) {
-          setUploadedImages([]);
-        }
-      } else {
-        setUploadedImages([]);
-      }
+        } catch (e) { setUploadedImages([]); }
+      } else setUploadedImages([]);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [blog]);
 
   useEffect(() => {
     if (!form.title) return;
-    if (!slugTouched) {
+    if (!form.slug) {
       const s = generateSlugFromTitle(form.title);
       setForm(prev => ({ ...prev, slug: s }));
     }
   }, [form.title]);
 
-  // safe tiptap init (avoid StarterKit is not a function)
   const starterInst = createExtensionInstanceSafely(StarterKit);
   const imageInst = configureExtensionSafely(Image, { inline: false });
   const linkInst = configureExtensionSafely(Link, { openOnClick: false });
@@ -770,8 +715,6 @@ function BlogEditor({ blog, onClose, onSaved }) {
     editor.commands.setContent(html);
   }, [editor, form.content]);
 
-  function setField(k, v) { setForm(prev => ({ ...prev, [k]: v })); }
-
   function insertImageToEditor(url) {
     if (!editor || !url) { toast.error("Editor not ready"); return; }
     try {
@@ -780,23 +723,6 @@ function BlogEditor({ blog, onClose, onSaved }) {
     } catch (err) {
       console.warn("insertImageToEditor failed", err);
       toast.error("Insert failed");
-    }
-  }
-
-  async function handleDeleteThumb(img) {
-    if (img.id) {
-      if (!window.confirm("Delete this uploaded image?")) return;
-      try {
-        await apiDelete(`/blog-images/${encodeURIComponent(img.id)}`);
-        setUploadedImages(prev => prev.filter(x => x.id !== img.id));
-        toast.success("Image deleted");
-      } catch (e) {
-        console.error(e);
-        toast.error("Delete failed");
-      }
-    } else {
-      setUploadedImages(prev => prev.filter(x => x.url !== img.url));
-      toast.success("Removed");
     }
   }
 
@@ -811,9 +737,7 @@ function BlogEditor({ blog, onClose, onSaved }) {
       try {
         const payload = { blog_id: form.id || null, url, caption: "" };
         const r = await apiPost("/blog-images", payload);
-        if (r && (r.id || r.url)) {
-          saved = { id: r.id || null, url: normalizeUploadUrl(r.url || r.public_url || url) };
-        }
+        if (r && (r.id || r.url)) saved = { id: r.id || null, url: normalizeUploadUrl(r.url || r.public_url || url) };
       } catch (e) { /* ignore */ }
       setUploadedImages(prev => {
         const entry = saved ? { id: saved.id, url: saved.url } : { url };
@@ -837,54 +761,6 @@ function BlogEditor({ blog, onClose, onSaved }) {
     if (fileInputRef.current) fileInputRef.current.click();
   }
 
-  useEffect(() => {
-    const el = document.getElementById("tiptap-editor-shell");
-    if (!el) return;
-    function onDrop(e) {
-      e.preventDefault();
-      const f = e.dataTransfer?.files?.[0];
-      if (f && f.type.startsWith("image/")) handleImageFile(f);
-    }
-    function onDragOver(e) { e.preventDefault(); }
-    function onPointerMove() {
-      if (!showGuide) return;
-      setGuideVisible(true);
-      if (el._guideHideTimer) clearTimeout(el._guideHideTimer);
-      el._guideHideTimer = setTimeout(() => setGuideVisible(false), 3000);
-    }
-
-    el.addEventListener("drop", onDrop);
-    el.addEventListener("dragover", onDragOver);
-    el.addEventListener("pointermove", onPointerMove);
-
-    return () => {
-      el.removeEventListener("drop", onDrop);
-      el.removeEventListener("dragover", onDragOver);
-      el.removeEventListener("pointermove", onPointerMove);
-      if (el._guideHideTimer) clearTimeout(el._guideHideTimer);
-    };
-  }, [form.id, editor, showGuide]);
-
-  useEffect(() => {
-    function onKey(e) {
-      const isSave = (e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S");
-      if (isSave) {
-        e.preventDefault();
-        save();
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [form, editor, busy]);
-
-  // Normalize image fields for blog before save
-  function normalizeBlogBeforeSave(payload = {}) {
-    const out = { ...payload };
-    if (out.og_image !== undefined) out.og_image = safeAbsoluteImageUrl(out.og_image, "blogs");
-    // canonical_url and other fields left unchanged
-    return out;
-  }
-
   async function save() {
     try {
       if (!form.title || !String(form.title).trim()) { toast.error("Post title is required"); return; }
@@ -903,7 +779,8 @@ function BlogEditor({ blog, onClose, onSaved }) {
         is_published: !!form.is_published
       };
 
-      const safePayload = normalizeBlogBeforeSave(payload);
+      const safePayload = { ...payload };
+      if (safePayload.og_image !== undefined) safePayload.og_image = safeAbsoluteImageUrl(safePayload.og_image, "blogs");
 
       if (form.id) {
         await apiPut(`/blogs/${encodeURIComponent(form.id)}`, safePayload);
@@ -926,17 +803,17 @@ function BlogEditor({ blog, onClose, onSaved }) {
     } finally { setBusy(false); }
   }
 
-  return (
-    <div className="fixed inset-0 z-40 flex items-start justify-center p-6">
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 z-[140] flex items-start justify-center p-4">
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-lg w-full max-w-6xl p-6 z-10">
+      <div className="relative bg-white rounded-2xl shadow-lg w-full max-w-6xl p-6 z-[141] overflow-auto max-h-[90vh]">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-4">
             <img src={LOGO} alt="Sprada" className="w-28 object-contain" />
             <h3 className="sprada-heading font-semibold text-lg">{form.id ? "Edit Blog Post" : "Create Blog Post"}</h3>
           </div>
-          <div>
-            <button onClick={onClose} className="px-3 py-2 border rounded-lg mr-2">Close</button>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-3 py-2 border rounded-lg">Close</button>
             <button onClick={save} className="px-4 py-2 bg-[#0f6b5a] text-white rounded-lg" disabled={busy}>{busy ? "Saving…" : (form.id ? "Save changes" : "Create post")}</button>
           </div>
         </div>
@@ -949,16 +826,16 @@ function BlogEditor({ blog, onClose, onSaved }) {
             </div>
             <div>
               <label className="block text-xs text-slate-500">URL Slug</label>
-              <input value={form.slug || ""} onChange={e => { setSlugTouched(true); setForm(prev => ({ ...prev, slug: e.target.value })); }} className="w-full border rounded-lg px-3 py-2" />
+              <input value={form.slug || ""} onChange={e => setForm(prev => ({ ...prev, slug: e.target.value }))} className="w-full border rounded-lg px-3 py-2" />
               <div className="flex items-center gap-3 mt-1">
                 <div className="text-xs text-slate-400">Tip: Keep it short and SEO-friendly</div>
-                <button onClick={() => { const s = generateSlugFromTitle(form.title || ""); setSlugTouched(true); setForm(prev => ({ ...prev, slug: s })); toast.success("Slug generated"); }} className="text-xs px-2 py-1 border rounded">Generate slug</button>
+                <button onClick={() => { const s = generateSlugFromTitle(form.title || ""); setForm(prev => ({ ...prev, slug: s })); toast.success("Slug generated"); }} className="text-xs px-2 py-1 border rounded">Generate slug</button>
               </div>
             </div>
           </div>
 
           <div className="lg:col-span-3">
-            <div className="flex items-center gap-3 mb-2">
+            <div className="flex items-center gap-3 mb-2 flex-wrap">
               <div className="rounded-md border px-2 py-1 bg-white">
                 <button onClick={() => setMode("wysiwyg")} className={`px-3 py-1 ${mode === "wysiwyg" ? "bg-[#0f6b5a] text-white rounded" : ""}`}>WYSIWYG</button>
                 <button onClick={() => setMode("markdown")} className={`px-3 py-1 ${mode === "markdown" ? "bg-[#0f6b5a] text-white rounded" : ""}`}>Markdown</button>
@@ -967,10 +844,10 @@ function BlogEditor({ blog, onClose, onSaved }) {
               <div className="text-xs text-slate-500">Tip: drag & drop images into the editor or use the image button. Press <strong>Ctrl/Cmd+S</strong> to save.</div>
             </div>
 
-            <div id="tiptap-editor-shell" className="rounded-lg border overflow-hidden editor-shell">
+            <div id="tiptap-editor-shell" className="rounded-lg border overflow-hidden">
               <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={e => e.target.files?.[0] && handleImageFile(e.target.files[0])} />
 
-              <div className="flex items-center gap-2 p-2 border-b bg-gray-50">
+              <div className="flex items-center gap-2 p-2 border-b bg-gray-50 flex-wrap">
                 <button onClick={() => editor && editor.chain().focus().toggleBold().run()} className="px-2 py-1 text-xs border rounded">B</button>
                 <button onClick={() => editor && editor.chain().focus().toggleItalic().run()} className="px-2 py-1 text-xs border rounded">I</button>
                 <button onClick={() => editor && editor.chain().focus().toggleBulletList().run()} className="px-2 py-1 text-xs border rounded">• List</button>
@@ -998,18 +875,6 @@ function BlogEditor({ blog, onClose, onSaved }) {
                   </div>
                 </div>
               )}
-
-              {showGuide && guideVisible && (
-                <div className="editor-guide" role="dialog" aria-label="Editor guide">
-                  <h4>Quick Editor Guide</h4>
-                  <div className="text-sm">• Use <strong>B</strong> or <strong>I</strong> for emphasis. Drop images to upload.</div>
-                  <div className="text-sm mt-1">• Markdown mode lets you paste raw markdown; Split shows side-by-side preview.</div>
-                  <div className="tip">Tip: Click the <strong>Image</strong> button to upload and embed images automatically.</div>
-                  <div className="mt-3 flex justify-end gap-2">
-                    <button onClick={() => setShowGuide(false)}>Hide for this session</button>
-                  </div>
-                </div>
-              )}
             </div>
 
             <div className="mt-3">
@@ -1025,7 +890,12 @@ function BlogEditor({ blog, onClose, onSaved }) {
                     <img src={safeAbsoluteImageUrl(normalizeUploadUrl(img.url) || img.url)} alt={`img-${idx}`} className="uploaded-thumb" />
                     <div className="flex gap-1">
                       <button onClick={() => insertImageToEditor(img.url)} className="px-2 py-1 border rounded text-xs">Insert</button>
-                      <button onClick={() => handleDeleteThumb(img)} className="px-2 py-1 border rounded text-xs text-red-600">Delete</button>
+                      <button onClick={async () => {
+                        if (!img.id) { setUploadedImages(prev => prev.filter(x => x.url !== img.url)); toast.success("Removed"); return; }
+                        if (!window.confirm("Delete this uploaded image?")) return;
+                        try { await apiDelete(`/blog-images/${encodeURIComponent(img.id)}`); setUploadedImages(prev => prev.filter(x => x.id !== img.id)); toast.success("Deleted"); }
+                        catch (e) { console.error(e); toast.error("Delete failed"); }
+                      }} className="px-2 py-1 border rounded text-xs text-red-600">Delete</button>
                     </div>
                   </div>
                 ))}
@@ -1054,12 +924,13 @@ function BlogEditor({ blog, onClose, onSaved }) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
 /* ===========================
-   BlogDetail - likes & comments moderation
+   BlogDetail modal component
    =========================== */
 function BlogDetail({ blog, onClose, onChange }) {
   const navigate = useNavigate();
@@ -1161,10 +1032,8 @@ function BlogDetail({ blog, onClose, onChange }) {
     }
   }
 
-  /* ---------------------------
-     Portal modal return to avoid header stacking/context issues
-     --------------------------- */
-  const HEADER_HEIGHT = 72; // adjust to your topbar height if needed
+  /* Portal modal */
+  const HEADER_HEIGHT = 72;
 
   return ReactDOM.createPortal(
     <div
@@ -1182,7 +1051,6 @@ function BlogDetail({ blog, onClose, onChange }) {
         WebkitOverflowScrolling: "touch"
       }}
     >
-      {/* backdrop */}
       <div
         onClick={onClose}
         style={{
@@ -1193,7 +1061,6 @@ function BlogDetail({ blog, onClose, onChange }) {
         }}
       />
 
-      {/* modal card */}
       <div
         style={{
           position: "relative",
@@ -1233,8 +1100,7 @@ function BlogDetail({ blog, onClose, onChange }) {
                   className="prose max-w-none blog-content"
                   dangerouslySetInnerHTML={{
                     __html:
-                      (detail.content && detail.content.html) ||
-                      (detail.content && detail.content.markdown ? marked.parse(detail.content.markdown) : "")
+                      DOMPurify.sanitize((detail.content && detail.content.html) || (detail.content && detail.content.markdown ? marked.parse(detail.content.markdown) : ""))
                   }}
                 />
               </div>
@@ -1310,9 +1176,7 @@ function BlogDetail({ blog, onClose, onChange }) {
   );
 }
 
-/* ===========================
-   Utilities
-   =========================== */
+/* Utilities */
 function downloadBlog(blog) {
   const data = JSON.stringify(blog, null, 2);
   const blob = new Blob([data], { type: "application/json" });
