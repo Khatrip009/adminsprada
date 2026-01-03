@@ -187,13 +187,7 @@ export default function Login() {
                     {busy ? "Signing in…" : "Sign In"}
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={fillDemo}
-                    className="w-full sm:w-auto py-3 rounded-xl border border-gray-200 bg-white text-sprada3 font-medium shadow-sm hover:bg-gray-50"
-                  >
-                    Fill demo
-                  </button>
+                  
                 </div>
               </form>
             </div>
