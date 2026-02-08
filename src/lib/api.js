@@ -5,11 +5,17 @@
 /* -----------------------
    Config / constants
    ----------------------- */
-export const API_ORIGIN = (import.meta.env.VITE_API_ORIGIN || "http://localhost:4200").replace(/\/$/, "");
+export const API_ORIGIN = (import.meta.env.VITE_API_ORIGIN || "https://sprada.onrender.com").replace(/\/$/, "");
 export const API_BASE = `${API_ORIGIN}/api`;
 export const UPLOAD_STRATEGY = (import.meta.env.VITE_UPLOAD_STRATEGY || "local").toLowerCase();
 // Serveable uploads base (used for building image URLs)
 export const UPLOADS_BASE = `${API_ORIGIN.replace(/\/$/, "")}/uploads`;
+
+const SUPABASE_PROJECT_REF = "kwthxsumqqssiywdcevx";
+
+const SUPABASE_PUBLIC_BASE =
+  `https://${SUPABASE_PROJECT_REF}.supabase.co/storage/v1/object/public/sprada_storage`;
+
 
 /* -----------------------
    Auth helpers
@@ -98,32 +104,33 @@ export async function attemptRefresh() {
    - If url starts with /uploads or /src/uploads, prefix with API_ORIGIN.
    - If url is uploads/... or src/uploads/... or a bare filename, prefix with UPLOADS_BASE.
    ----------------------- */
-export function toAbsoluteImageUrl(url) {
-  if (!url || typeof url !== "string") return null;
-  const trimmed = url.trim();
+export function toAbsoluteImageUrl(path) {
+  if (!path || typeof path !== "string") return null;
+
+  const trimmed = path.trim();
   if (!trimmed) return null;
 
-  // Already absolute
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-
-  // Starts with /uploads or /src/uploads
-  if (/^\/(?:src\/)?uploads\//i.test(trimmed)) {
-    return `${API_ORIGIN}${trimmed}`;
+  // Already a Supabase public URL
+  if (
+    trimmed.startsWith(
+      "https://kwthxsumqqssiywdcevx.supabase.co/storage/v1/object/public/sprada_storage"
+    )
+  ) {
+    return trimmed;
   }
 
-  // Relative uploads path like uploads/foo.jpg or src/uploads/...
-  if (/^(?:src\/)?uploads\//i.test(trimmed)) {
-    return `${API_ORIGIN}/${trimmed.replace(/^\/+/, "")}`;
-  }
+  // Remove leading slashes
+  const cleanPath = trimmed.replace(/^\/+/, "");
 
-  // Bare filename or path -> assume uploads base (space)
-  if (!trimmed.startsWith("/")) {
-    return `${UPLOADS_BASE.replace(/\/$/, "")}/${trimmed.replace(/^\/+/, "")}`;
-  }
-
-  // Fallback: prefix API_ORIGIN
-  return `${API_ORIGIN}${trimmed}`;
+  /**
+   * Expected inputs:
+   *  - products/image.jpg
+   *  - blogs/post1/banner.png
+   *  - categories/rings.png
+   */
+  return `${SUPABASE_PUBLIC_BASE}/${cleanPath}`;
 }
+
 
 /* -----------------------
    Core fetch wrapper (improved)
@@ -479,30 +486,23 @@ export async function uploadFileToLocalSpace(file, space = 'blogs') {
  * - options.space: 'blogs' | 'products' (defaults to 'blogs')
  * Attempts S3 presign flow if configured, otherwise falls back to local space upload.
  */
-export async function uploadFile(file, { space = 'blogs' } = {}) {
-  if (!(file instanceof File)) throw new Error('file required');
+export async function uploadFile(file, { space = "blogs" } = {}) {
+  if (!(file instanceof File)) throw new Error("file required");
 
-  if (UPLOAD_STRATEGY === 's3') {
-    try {
-      const pres = await presignUpload(file.name, file.type || 'application/octet-stream');
-      if (pres && pres.uploadUrl) {
-        const putRes = await fetch(pres.uploadUrl, { method: 'PUT', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file });
-        if (!putRes.ok) {
-          console.warn('[uploadFile] presign PUT failed, falling back to local', putRes.status);
-          return await uploadFileToLocalSpace(file, space);
-        }
-        return pres.publicUrl || pres.public_url || pres.url;
-      }
-      return await uploadFileToLocalSpace(file, space);
-    } catch (err) {
-      console.warn('[uploadFile] presign failed, falling back to local upload', err && err.message ? err.message : err);
-      return uploadFileToLocalSpace(file, space);
-    }
-  }
+  const supabase = window.supabase; // or import your client
 
-  // Default: local upload (space-aware)
-  return uploadFileToLocalSpace(file, space);
+  const filePath = `${space}/${Date.now()}-${file.name}`;
+
+  const { error } = await supabase
+    .storage
+    .from("sprada_storage")
+    .upload(filePath, file, { upsert: true });
+
+  if (error) throw error;
+
+  return filePath; // IMPORTANT: store relative path only
 }
+
 
 /* -------- Product images gallery helpers -------- */
 export async function createProductImage(payload) {

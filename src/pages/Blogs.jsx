@@ -101,34 +101,36 @@ function isLocalFilesystemPath(value) {
   if (v.includes("\\users\\")) return true;
   return false;
 }
-function safeAbsoluteImageUrl(raw, space = "blogs") {
+function safeAbsoluteImageUrl(raw) {
   if (!raw || typeof raw !== "string") return null;
+
   const val = raw.trim();
   if (!val) return null;
+
+  // allow data URLs (editor previews)
   if (/^data:/i.test(val)) return val;
-  if (/^https?:\/\//i.test(val)) return val;
-  if (isLocalFilesystemPath(val)) return null;
 
-  try {
-    const abs = toAbsoluteImageUrl ? toAbsoluteImageUrl(val) : null;
-    if (abs && !/\/mnt\//i.test(abs)) return abs;
-  } catch (e) { /* ignore */ }
-
-  try {
-    if (/^\/(?:src\/)?uploads\//i.test(val)) {
-      return `${API_ORIGIN}${val}`;
-    }
-    if (/^(?:src\/)?uploads\//i.test(val)) {
-      return `${API_ORIGIN}/${val.replace(/^\/+/, "")}`;
-    }
-    if (!val.startsWith("/")) {
-      return `${API_ORIGIN}/uploads/${space}/${val.replace(/^\/+/, "")}`;
-    }
-    return `${API_ORIGIN}${val}`;
-  } catch {
+  // block local filesystem paths completely
+  if (
+    val.startsWith("/mnt/") ||
+    val.startsWith("file://") ||
+    /^[a-z]:\\/i.test(val)
+  ) {
     return null;
   }
+
+  // Absolute HTTP(S) → allow ONLY Supabase
+  if (/^https?:\/\//i.test(val)) {
+    if (val.includes(".supabase.co/storage/v1/object/public/sprada_storage")) {
+      return val;
+    }
+    return null; // ❌ reject non-supabase URLs
+  }
+
+  // Relative path → assume Supabase bucket
+  return toAbsoluteImageUrl(val);
 }
+
 
 /* Small modal confirm */
 function ConfirmModal({ open, title, message, onCancel, onConfirm, confirmLabel = "Confirm" }) {
