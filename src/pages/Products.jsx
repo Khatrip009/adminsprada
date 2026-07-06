@@ -576,39 +576,43 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
     } finally { setBusy(false); }
   }
 
-  async function onFileSelected(file) {
-    if (!file) return;
-    if (!form.id) {
-      setErr("Save product first to upload images");
-      toast.error("Save product first to upload images");
-      return;
-    }
-    setErr(""); setBusy(true);
-    const uploadingToastId = toast.loading("Uploading image…");
-    try {
-      const publicUrlRaw = await uploadFile(file, { space: "products" });
-      const publicUrl = normalizeUploadUrl(publicUrlRaw || "");
-      const resp = await createProductImage({ product_id: form.id, url: publicUrl, filename: file.name, is_primary: images.length === 0 });
-      const created = resp && (resp.image || resp.product_image || (resp.id ? resp : null)) || null;
-      if (created) {
-        setImages((prev) => [{ ...created, url: normalizeUploadUrl(created.url || created.public_url || publicUrl) }, ...prev]);
-      } else {
-        setImages((prev) => [{ id: null, url: publicUrl }, ...prev]);
-      }
-      toast.success("Upload complete", { id: uploadingToastId });
-    } catch (e) {
-      console.error(e);
-      const isMulterLimit = (e && (e.message && /file.*large/i.test(e.message))) ||
-                            (e?.status === 400 && e?.data && (e.data.error === "file_too_large" || /file_too_large|LIMIT_FILE_SIZE/.test(JSON.stringify(e.data))));
-      if (isMulterLimit) {
-        toast.error("Upload failed — file too large. Please use a smaller image.", { id: uploadingToastId });
-        setErr("File too large");
-      } else {
-        toast.error("Upload failed", { id: uploadingToastId });
-        setErr("Upload failed");
-      }
-    } finally { setBusy(false); }
+async function onFileSelected(file) {
+  if (!file) return;
+  if (!form.id) {
+    setErr('Save product first to upload images');
+    toast.error('Save product first to upload images');
+    return;
   }
+
+  setErr(''); 
+  setBusy(true);
+  const uploadingToastId = toast.loading('Uploading image…');
+
+  try {
+    // Directly send the file to the backend – it handles both upload and DB insert
+    const resp = await createProductImage(form.id, file, images.length === 0);
+    const created = resp?.image || resp;
+    if (created) {
+      setImages((prev) => [{
+        ...created,
+        url: created.url || created.publicUrl
+      }, ...prev]);
+    }
+    toast.success('Image uploaded', { id: uploadingToastId });
+  } catch (e) {
+    console.error(e);
+    const isMulterLimit = e?.message?.includes('file too large') || e?.data?.error === 'file_too_large';
+    if (isMulterLimit) {
+      toast.error('File too large (max 50MB)', { id: uploadingToastId });
+      setErr('File too large');
+    } else {
+      toast.error('Upload failed', { id: uploadingToastId });
+      setErr('Upload failed');
+    }
+  } finally {
+    setBusy(false);
+  }
+}
 
   async function setPrimary(img) {
     if (!img || !img.id) {

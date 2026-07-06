@@ -506,27 +506,33 @@ export async function uploadFile(file, { space = "blogs" } = {}) {
 
 
 /* -------- Product images gallery helpers -------- */
-export async function createProductImage(payload) {
-  const headers = { "Content-Type": "application/json", ...authHeaders() };
+export async function createProductImage(productId, file, isPrimary = false) {
+  if (!productId) throw new Error('product_id required');
+  if (!(file instanceof File)) throw new Error('file required');
+
+  const formData = new FormData();
+  formData.append('product_id', productId);
+  formData.append('is_primary', String(isPrimary));
+  formData.append('file', file);
+
   const url = `${API_BASE}/product-images`;
 
   const res = await fetch(url, {
-    method: "POST",
-    headers,
-    credentials: "include",
-    body: JSON.stringify(payload)
+    method: 'POST',
+    headers: { ...authHeaders() }, // ❌ DO NOT set Content-Type – browser will add boundary
+    credentials: 'include',
+    body: formData
   });
 
   const data = await tryParseJSON(res);
   if (!res.ok) {
-    const err = new Error(data?.error || res.statusText || "API error");
+    const err = new Error(data?.error || res.statusText || 'API error');
     err.status = res.status;
     err.data = data;
     throw err;
   }
   return data;
 }
-
 export async function getProductImages(product_id) {
   if (!product_id) throw new Error('product_id required');
   return apiGet(`/product-images?product_id=${encodeURIComponent(product_id)}`);
