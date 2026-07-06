@@ -489,18 +489,19 @@ export async function uploadFileToLocalSpace(file, space = 'blogs') {
 export async function uploadFile(file, { space = "blogs" } = {}) {
   if (!(file instanceof File)) throw new Error("file required");
 
-  const supabase = window.supabase; // or import your client
+  if (UPLOAD_STRATEGY === 's3' && window.supabase) {
+    const supabase = window.supabase;
+    const filePath = `${space}/${Date.now()}-${file.name}`;
+    const { error } = await supabase.storage
+      .from('sprada_storage')
+      .upload(filePath, file, { upsert: true });
+    if (error) throw error;
+    return filePath;
+  }
 
-  const filePath = `${space}/${Date.now()}-${file.name}`;
-
-  const { error } = await supabase
-    .storage
-    .from("sprada_storage")
-    .upload(filePath, file, { upsert: true });
-
-  if (error) throw error;
-
-  return filePath; // IMPORTANT: store relative path only
+  // Fallback to local server upload
+  console.warn('[uploadFile] Supabase not available; falling back to local upload');
+  return await uploadFileToLocalSpace(file, space);
 }
 
 
