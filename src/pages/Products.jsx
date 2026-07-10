@@ -1,19 +1,19 @@
 // src/pages/Products.jsx
 import React, { useEffect, useState } from "react";
-import Sidebar from "../components/Sidebar"; // adjust path if needed
-import LOGO from "../assets/SPRADA_LOGO.png"; // ensure file exists
+import Sidebar from "../components/Sidebar";
+import LOGO from "../assets/SPRADA_LOGO.png";
 
 // toast
 import { Toaster, toast } from "react-hot-toast";
 
-// API helpers (expected to exist in your lib)
+// API helpers
 import {
   getCategories,
   getProducts,
   apiPost,
   apiPut,
   apiDelete,
-  uploadFile, // should exist in your lib (handles S3 presign or local fallback)
+  uploadFile,
   createProductImage,
   getProductImages,
   deleteProductImage,
@@ -22,7 +22,6 @@ import {
   API_ORIGIN
 } from "../lib/api";
 import clsx from "clsx";
-import dayjs from "dayjs";
 
 /* ---------------------------
    Small helpers
@@ -72,7 +71,7 @@ function ensureFontsInjected() {
 }
 
 /* ---------------------------
-   Utility: robust categories loader (tries include_counts)
+   Utility: robust categories loader
    --------------------------- */
 async function loadCategoriesWithCounts() {
   try {
@@ -137,7 +136,7 @@ function TradeBadge({ trade }) {
 }
 
 /* ---------------------------
-   Image helpers (new, defensive)
+   Image helpers
    --------------------------- */
 
 function isLocalFilesystemPath(value) {
@@ -260,7 +259,7 @@ export default function ProductsPage() {
 }
 
 /* ---------------------------
-   ProductsAdmin (responsive tweaks)
+   ProductsAdmin
    --------------------------- */
 function ProductsAdmin() {
   const [products, setProducts] = useState([]);
@@ -518,7 +517,7 @@ function ProductsAdmin() {
 }
 
 /* -------------------------
-   ProductForm component (responsive modals)
+   ProductForm component
    ------------------------- */
 function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
   const [form, setForm] = useState({ ...(product || {}) });
@@ -576,43 +575,42 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
     } finally { setBusy(false); }
   }
 
-async function onFileSelected(file) {
-  if (!file) return;
-  if (!form.id) {
-    setErr('Save product first to upload images');
-    toast.error('Save product first to upload images');
-    return;
-  }
-
-  setErr(''); 
-  setBusy(true);
-  const uploadingToastId = toast.loading('Uploading image…');
-
-  try {
-    // Directly send the file to the backend – it handles both upload and DB insert
-    const resp = await createProductImage(form.id, file, images.length === 0);
-    const created = resp?.image || resp;
-    if (created) {
-      setImages((prev) => [{
-        ...created,
-        url: created.url || created.publicUrl
-      }, ...prev]);
+  async function onFileSelected(file) {
+    if (!file) return;
+    if (!form.id) {
+      setErr('Save product first to upload images');
+      toast.error('Save product first to upload images');
+      return;
     }
-    toast.success('Image uploaded', { id: uploadingToastId });
-  } catch (e) {
-    console.error(e);
-    const isMulterLimit = e?.message?.includes('file too large') || e?.data?.error === 'file_too_large';
-    if (isMulterLimit) {
-      toast.error('File too large (max 50MB)', { id: uploadingToastId });
-      setErr('File too large');
-    } else {
-      toast.error('Upload failed', { id: uploadingToastId });
-      setErr('Upload failed');
+
+    setErr(''); 
+    setBusy(true);
+    const uploadingToastId = toast.loading('Uploading image…');
+
+    try {
+      const resp = await createProductImage(form.id, file, images.length === 0);
+      const created = resp?.image || resp;
+      if (created) {
+        setImages((prev) => [{
+          ...created,
+          url: created.url || created.publicUrl
+        }, ...prev]);
+      }
+      toast.success('Image uploaded', { id: uploadingToastId });
+    } catch (e) {
+      console.error(e);
+      const isMulterLimit = e?.message?.includes('file too large') || e?.data?.error === 'file_too_large';
+      if (isMulterLimit) {
+        toast.error('File too large (max 50MB)', { id: uploadingToastId });
+        setErr('File too large');
+      } else {
+        toast.error('Upload failed', { id: uploadingToastId });
+        setErr('Upload failed');
+      }
+    } finally {
+      setBusy(false);
     }
-  } finally {
-    setBusy(false);
   }
-}
 
   async function setPrimary(img) {
     if (!img || !img.id) {
@@ -745,7 +743,7 @@ async function onFileSelected(file) {
 }
 
 /* -------------------------
-   CategoriesManager (responsive)
+   CategoriesManager (with image upload)
    ------------------------- */
 function CategoriesManager({ initialCategories = [], onClose, onChange }) {
   const [categories, setCategories] = useState(initialCategories || []);
@@ -753,53 +751,61 @@ function CategoriesManager({ initialCategories = [], onClose, onChange }) {
   const [editing, setEditing] = useState(null);
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
+  const [uploadingImage, setUploadingImage] = useState(false);
 
-  useEffect(() => { setCategories(initialCategories?.map(c => ({ ...c, trade_type: c.trade_type || 'both' })) || []); }, [initialCategories]);
+  useEffect(() => {
+    setCategories(
+      initialCategories?.map(c => ({
+        ...c,
+        trade_type: c.trade_type || 'both',
+        image: c.image || null
+      })) || []
+    );
+  }, [initialCategories]);
 
   function openNew() {
-    setEditing({ name: "", slug: "", description: "", parent_id: "", trade_type: "both" });
+    setEditing({ name: "", slug: "", description: "", parent_id: "", trade_type: "both", image: null });
     setErr(""); setMsg("");
   }
 
   function openEdit(cat) {
-    setEditing({ ...cat, trade_type: cat.trade_type || "both" });
+    setEditing({ ...cat, trade_type: cat.trade_type || "both", image: cat.image || null });
     setErr(""); setMsg("");
   }
 
   async function save() {
     try {
       setErr(""); setBusy(true);
-      if (!editing || !editing.name || !String(editing.name).trim()) { setErr("Name required"); return; }
+      if (!editing || !editing.name || !String(editing.name).trim()) {
+        setErr("Name required");
+        return;
+      }
+
+      const payload = {
+        name: editing.name,
+        slug: editing.slug || undefined,
+        description: editing.description || undefined,
+        parent_id: editing.parent_id || undefined,
+        trade_type: editing.trade_type || "both",
+        image: editing.image || null // image path (e.g., "categories/xxx.jpg")
+      };
 
       if (editing.id) {
-        const payload = {
-          name: editing.name,
-          slug: editing.slug || undefined,
-          description: editing.description || undefined,
-          parent_id: editing.parent_id || undefined,
-          trade_type: editing.trade_type || "both",
-        };
         await apiPut(`/categories/${encodeURIComponent(editing.id)}`, payload);
-        const updated = categories.map((c) => c.id === editing.id ? { ...c, ...payload } : c);
+        const updated = categories.map((c) =>
+          c.id === editing.id ? { ...c, ...payload } : c
+        );
         setCategories(updated);
         setMsg("Updated");
         toast.success("Category updated");
       } else {
-        const payload = {
-          name: editing.name,
-          slug: editing.slug || undefined,
-          description: editing.description || undefined,
-          parent_id: editing.parent_id || undefined,
-          trade_type: editing.trade_type || "both",
-        };
         const created = await apiPost("/categories", payload);
         const createdRow = (created && created.category) ? created.category : created;
-        if (createdRow && createdRow.id) setCategories((prev) => [createdRow, ...prev]);
-        else {
-          try {
-            const c = await loadCategoriesWithCounts();
-            setCategories(Array.isArray(c) ? c : categories);
-          } catch (e) { }
+        if (createdRow && createdRow.id) {
+          setCategories((prev) => [createdRow, ...prev]);
+        } else {
+          const c = await loadCategoriesWithCounts();
+          setCategories(Array.isArray(c) ? c : categories);
         }
         setMsg("Created");
         toast.success("Category created");
@@ -811,7 +817,9 @@ function CategoriesManager({ initialCategories = [], onClose, onChange }) {
       console.error(e);
       setErr("Save failed");
       toast.error("Category save failed");
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function remove(cat) {
@@ -828,7 +836,35 @@ function CategoriesManager({ initialCategories = [], onClose, onChange }) {
       console.error(e);
       setErr("Delete failed");
       toast.error("Delete failed");
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCategoryImageUpload(file) {
+    if (!file) return;
+    setUploadingImage(true);
+    try {
+      // Upload to 'categories' space using your existing uploadFile
+      const result = await uploadFile(file, { space: 'categories' });
+      // result should be a path like "categories/xxx.jpg" or a full URL
+      // store the path (relative) – your backend expects something like "categories/xxx.jpg"
+      // If result is a full URL, extract the path after the bucket
+      let imagePath = result;
+      if (typeof result === 'string' && result.startsWith('http')) {
+        // Try to extract the relative path
+        const match = result.match(/\/storage\/v1\/object\/public\/[^/]+\/(.+)$/);
+        if (match) imagePath = match[1];
+        else imagePath = result;
+      }
+      setEditing(prev => ({ ...prev, image: imagePath }));
+      toast.success('Category image uploaded');
+    } catch (err) {
+      console.error('Category image upload failed:', err);
+      toast.error('Image upload failed');
+    } finally {
+      setUploadingImage(false);
+    }
   }
 
   return (
@@ -854,9 +890,23 @@ function CategoriesManager({ initialCategories = [], onClose, onChange }) {
             {categories.length === 0 && <div className="text-sm text-[color:var(--sprada-muted)]">No categories</div>}
             {categories.map((cat) => (
               <div key={cat.id} className="flex items-center justify-between p-3 border rounded-lg hover:shadow-sm transition">
-                <div>
-                  <div className="font-medium">{cat.name}</div>
-                  <div className="text-xs text-[color:var(--sprada-muted)]">{cat.slug} {cat.product_count !== undefined ? `• ${cat.product_count} products` : ""} • {cat.trade_type || "both"}</div>
+                <div className="flex items-center gap-3">
+                  {cat.image ? (
+                    <img
+                      src={safeAbsoluteImageUrl(cat.image)}
+                      alt={cat.name}
+                      className="w-10 h-10 object-cover rounded-full"
+                      onError={(e) => e.target.style.display = 'none'}
+                    />
+                  ) : (
+                    <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-xs text-gray-400">No img</div>
+                  )}
+                  <div>
+                    <div className="font-medium">{cat.name}</div>
+                    <div className="text-xs text-[color:var(--sprada-muted)]">
+                      {cat.slug} {cat.product_count !== undefined ? `• ${cat.product_count} products` : ""} • {cat.trade_type || "both"}
+                    </div>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <button className="px-3 py-1 border rounded text-sm" onClick={() => openEdit(cat)}>Edit</button>
@@ -871,33 +921,109 @@ function CategoriesManager({ initialCategories = [], onClose, onChange }) {
 
             <div className="space-y-3">
               <label className="block text-xs text-[color:var(--sprada-muted)]">Name</label>
-              <input value={editing?.name || ""} onChange={(e) => setEditing((prev) => ({ ...(prev || {}), name: e.target.value }))} className="w-full border rounded-lg px-3 py-2" />
+              <input
+                value={editing?.name || ""}
+                onChange={(e) => setEditing((prev) => ({ ...(prev || {}), name: e.target.value }))}
+                className="w-full border rounded-lg px-3 py-2"
+              />
 
               <label className="block text-xs text-[color:var(--sprada-muted)] mt-2">Slug</label>
-              <input value={editing?.slug || ""} onChange={(e) => setEditing((prev) => ({ ...(prev || {}), slug: e.target.value }))} className="w-full border rounded-lg px-3 py-2" />
+              <input
+                value={editing?.slug || ""}
+                onChange={(e) => setEditing((prev) => ({ ...(prev || {}), slug: e.target.value }))}
+                className="w-full border rounded-lg px-3 py-2"
+              />
 
               <label className="block text-xs text-[color:var(--sprada-muted)] mt-2">Parent</label>
-              <select value={editing?.parent_id || ""} onChange={(e) => setEditing((prev) => ({ ...(prev || {}), parent_id: e.target.value }))} className="w-full border rounded-lg px-3 py-2">
+              <select
+                value={editing?.parent_id || ""}
+                onChange={(e) => setEditing((prev) => ({ ...(prev || {}), parent_id: e.target.value }))}
+                className="w-full border rounded-lg px-3 py-2"
+              >
                 <option value="">-- none --</option>
-                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
               </select>
 
               <label className="block text-xs text-[color:var(--sprada-muted)] mt-2">Trade type</label>
-              <select value={editing?.trade_type || "both"} onChange={(e) => setEditing((prev) => ({ ...(prev || {}), trade_type: e.target.value }))} className="w-full border rounded-lg px-3 py-2">
+              <select
+                value={editing?.trade_type || "both"}
+                onChange={(e) => setEditing((prev) => ({ ...(prev || {}), trade_type: e.target.value }))}
+                className="w-full border rounded-lg px-3 py-2"
+              >
                 <option value="import">Import</option>
                 <option value="export">Export</option>
                 <option value="both">Both</option>
               </select>
 
               <label className="block text-xs text-[color:var(--sprada-muted)] mt-2">Description</label>
-              <textarea value={editing?.description || ""} onChange={(e) => setEditing((prev) => ({ ...(prev || {}), description: e.target.value }))} className="w-full border rounded-lg px-3 py-2" rows={4} />
+              <textarea
+                value={editing?.description || ""}
+                onChange={(e) => setEditing((prev) => ({ ...(prev || {}), description: e.target.value }))}
+                className="w-full border rounded-lg px-3 py-2"
+                rows={4}
+              />
+
+              {/* ---- CATEGORY IMAGE UPLOAD ---- */}
+              <div className="mt-2">
+                <label className="block text-xs text-[color:var(--sprada-muted)]">Category Image</label>
+                <div className="flex items-center gap-3 mt-1">
+                  {editing?.image ? (
+                    <img
+                      src={safeAbsoluteImageUrl(editing.image)}
+                      alt="category preview"
+                      className="w-16 h-16 object-cover rounded border"
+                      onError={(e) => e.target.style.display = 'none'}
+                    />
+                  ) : (
+                    <div className="w-16 h-16 bg-gray-100 rounded border flex items-center justify-center text-xs text-gray-400">No img</div>
+                  )}
+                  <label className="px-3 py-1 border rounded cursor-pointer bg-white text-sm hover:bg-gray-50">
+                    Upload
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleCategoryImageUpload(file);
+                      }}
+                      disabled={uploadingImage}
+                    />
+                  </label>
+                  {uploadingImage && <span className="text-xs text-blue-500">Uploading…</span>}
+                  {editing?.image && (
+                    <button
+                      className="text-xs text-red-500 hover:underline"
+                      onClick={() => setEditing(prev => ({ ...prev, image: null }))}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                <div className="text-xs text-[color:var(--sprada-muted)] mt-1">
+                  Upload will store the image in Supabase storage.
+                </div>
+              </div>
 
               <div className="mt-4 flex items-center justify-between">
-                <div>{editing && editing.id && <button className="px-3 py-2 border rounded-lg mr-2" onClick={() => setEditing(null)}>Cancel</button>}</div>
-                <div><button className={clsx("px-4 py-2 rounded-lg text-white", busy ? "bg-slate-400" : "bg-[color:var(--sprada-accent)]")} onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</button></div>
+                <div>
+                  {editing && editing.id && (
+                    <button className="px-3 py-2 border rounded-lg mr-2" onClick={() => setEditing(null)}>Cancel</button>
+                  )}
+                </div>
+                <div>
+                  <button
+                    className={clsx("px-4 py-2 rounded-lg text-white", busy ? "bg-slate-400" : "bg-[color:var(--sprada-accent)]")}
+                    onClick={save}
+                    disabled={busy}
+                  >
+                    {busy ? "Saving…" : "Save"}
+                  </button>
+                </div>
               </div>
             </div>
-
           </div>
         </div>
       </div>
