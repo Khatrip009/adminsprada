@@ -1,6 +1,6 @@
 // src/components/LatestBlogs.jsx
 import React, { useEffect, useState } from "react";
-import { getBlogs, getComments, getLikesCount } from "../lib/api";
+import { getBlogs, getComments, getLikesCount, toAbsoluteImageUrl } from "../lib/api";
 
 /**
  * LatestBlogs – displays recent blog posts with comments & likes counts.
@@ -17,7 +17,10 @@ function niceDate(d) {
 
 function BlogCard({ blog, fallbackSrc }) {
   const [imgLoaded, setImgLoaded] = useState(false);
-  const [imgSrc, setImgSrc] = useState(blog.og_image || blog.image || fallbackSrc);
+  // Compute the best image URL using primary_image, then og_image, then image, then fallback
+  const rawSrc = blog.primary_image || blog.og_image || blog.image || fallbackSrc;
+  const initialImgSrc = toAbsoluteImageUrl(rawSrc) || fallbackSrc;
+  const [imgSrc, setImgSrc] = useState(initialImgSrc);
   const [commentsCount, setCommentsCount] = useState(null);
   const [likesCount, setLikesCount] = useState(null);
 
@@ -25,7 +28,6 @@ function BlogCard({ blog, fallbackSrc }) {
   useEffect(() => {
     const fetchCounts = async () => {
       try {
-        // Get comments (published only, unless you want all)
         const comments = await getComments(blog.id, { all: false });
         setCommentsCount(comments?.length || 0);
       } catch (err) {
@@ -45,10 +47,13 @@ function BlogCard({ blog, fallbackSrc }) {
     fetchCounts();
   }, [blog.id]);
 
+  // Update image source when blog changes
   useEffect(() => {
-    setImgSrc(blog.og_image || blog.image || fallbackSrc);
+    const raw = blog.primary_image || blog.og_image || blog.image || fallbackSrc;
+    const url = toAbsoluteImageUrl(raw) || fallbackSrc;
+    setImgSrc(url);
     setImgLoaded(false);
-  }, [blog.og_image, blog.image, fallbackSrc]);
+  }, [blog.primary_image, blog.og_image, blog.image, fallbackSrc]);
 
   return (
     <a href={`/blog/${encodeURIComponent(blog.slug || blog.id)}`} className="block group" aria-label={blog.title}>
@@ -134,7 +139,6 @@ export default function LatestBlogs({ max = 5 }) {
       try {
         const data = await getBlogs(maxToShow); // fetches latest `maxToShow` blogs
         if (!mounted) return;
-        // getBlogs returns an array sorted by created_at desc already
         setBlogs(data);
         setLoading(false);
         setError("");

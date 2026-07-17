@@ -292,22 +292,54 @@ function PreviewModal({ open, blogRef, onClose }) {
         const idOrSlug = blogRef.slug || blogRef.id;
         if (!idOrSlug) throw new Error("missing id/slug");
 
-        // ✅ Use Supabase to fetch by slug or id
-        let query = supabase.from("blogs").select("*").or(`slug.eq.${idOrSlug},id.eq.${idOrSlug}`);
-        // For preview, allow unpublished if user is authenticated (check via auth)
-        const user = await auth.getUser().catch(() => null);
+        // First, try to fetch by slug
+        let query = supabase
+          .from("blogs")
+          .select(`
+            *,
+            blog_images ( url, created_at )
+          `)
+          .eq("slug", idOrSlug);
+
+        // For preview, allow unpublished if user is authenticated
+        const user = await auth.fetchUser().catch(() => null);
         if (!user) {
           query = query.eq("is_published", true);
         }
         const { data, error } = await query.maybeSingle();
 
-        if (error) {
-          setError("Not found");
-        } else if (data) {
-          setBlog(data);
-        } else {
-          setError("Not found");
+        if (!error && data) {
+          // Found by slug
+          const primaryImage = data.og_image || data.blog_images?.[0]?.url || null;
+          setBlog({ ...data, primary_image: primaryImage });
+          setLoading(false);
+          return;
         }
+
+        // If not found by slug, try by id (only if idOrSlug looks like a UUID)
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (uuidRegex.test(idOrSlug)) {
+          let queryById = supabase
+            .from("blogs")
+            .select(`
+              *,
+              blog_images ( url, created_at )
+            `)
+            .eq("id", idOrSlug);
+
+          if (!user) {
+            queryById = queryById.eq("is_published", true);
+          }
+          const { data: dataById, error: errorById } = await queryById.maybeSingle();
+          if (!errorById && dataById) {
+            const primaryImage = dataById.og_image || dataById.blog_images?.[0]?.url || null;
+            setBlog({ ...dataById, primary_image: primaryImage });
+            setLoading(false);
+            return;
+          }
+        }
+
+        setError("Not found");
         setLoading(false);
       } catch (err) {
         console.error("Preview fetch error", err);
@@ -477,30 +509,36 @@ function BlogsAdmin() {
     navigate("/login", { replace: true });
   };
 
-  // ✅ Load blogs using Supabase (with search and pagination)
+  // ✅ Load blogs using Supabase with blog_images join
   const load = useCallback(async () => {
     setLoading(true);
     try {
       let query = supabase
         .from("blogs")
-        .select("*", { count: "exact" })
+        .select(`
+          *,
+          blog_images ( url, created_at )
+        `, { count: "exact" })
         .order("created_at", { ascending: false })
         .range((page - 1) * limit, page * limit - 1);
 
       if (q) {
-        // search in title and excerpt
         query = query.or(`title.ilike.%${q}%,excerpt.ilike.%${q}%`);
       }
 
       const { data, error, count } = await query;
       if (error) throw error;
 
-      const normalized = (data || []).map(b => ({
-        ...b,
-        image: normalizeUploadUrl(b.og_image || b.image || b.thumbnail || "")
-      }));
+      // Transform: compute primary_image
+      const normalized = (data || []).map(b => {
+        const primaryImage = b.og_image || b.blog_images?.[0]?.url || null;
+        return {
+          ...b,
+          primary_image: primaryImage,
+          image: normalizeUploadUrl(b.og_image || b.image || b.thumbnail || ""),
+        };
+      });
       setBlogs(normalized);
-      // Optionally store total count for pagination; we'll just keep it simple.
     } catch (e) {
       console.error(e);
       if (e?.status === 401) return handleUnauthorized();
@@ -596,39 +634,42 @@ function BlogsAdmin() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {loading ? Array.from({ length: limit }).map((_, i) => <div key={i} className="h-44 bg-gray-100 animate-pulse rounded-2xl" />) :
           (blogs.length === 0 ? <div className="text-slate-500">No blogs yet</div> :
-            blogs.map(b => (
-              <article key={b.id} className="bg-white border rounded-2xl p-4 hover:shadow-md transition transform hover:-translate-y-1">
-                <div className="flex gap-4">
-                  <div className="w-28 h-20 rounded-lg overflow-hidden bg-gray-50 flex items-center justify-center">
-                    {b.image ? <img loading="lazy" src={safeAbsoluteImageUrl(normalizeUploadUrl(b.image) || b.image)} alt={b.title} className="w-full h-full object-cover" /> : <div className="text-xs text-slate-400">No image</div>}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="sprada-heading font-medium text-slate-800 line-clamp-3">{b.title}</h3>
-                    <p className="text-xs text-slate-500 mt-1 line-clamp-3">{b.excerpt}</p>
-                    <div className="mt-2 text-xs text-slate-600 flex flex-wrap items-center gap-3">
-                      <span>{b.published_at ? (new Date(b.published_at)).toLocaleDateString() : "Draft"}</span>
-                      <span>•</span>
-                      <span>{b.likes_count ?? 0} likes</span>
-                      <span>•</span>
-                      <span>{b.comments_count ?? 0} comments</span>
+            blogs.map(b => {
+              const imgSrc = b.primary_image || b.og_image || b.image || "";
+              return (
+                <article key={b.id} className="bg-white border rounded-2xl p-4 hover:shadow-md transition transform hover:-translate-y-1">
+                  <div className="flex gap-4">
+                    <div className="w-28 h-20 rounded-lg overflow-hidden bg-gray-50 flex items-center justify-center">
+                      {imgSrc ? <img loading="lazy" src={toAbsoluteImageUrl(imgSrc)} alt={b.title} className="w-full h-full object-cover" /> : <div className="text-xs text-slate-400">No image</div>}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="sprada-heading font-medium text-slate-800 line-clamp-3">{b.title}</h3>
+                      <p className="text-xs text-slate-500 mt-1 line-clamp-3">{b.excerpt}</p>
+                      <div className="mt-2 text-xs text-slate-600 flex flex-wrap items-center gap-3">
+                        <span>{b.published_at ? (new Date(b.published_at)).toLocaleDateString() : "Draft"}</span>
+                        <span>•</span>
+                        <span>{b.likes_count ?? 0} likes</span>
+                        <span>•</span>
+                        <span>{b.comments_count ?? 0} comments</span>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="mt-4 flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={() => openEdit(b)} className="px-3 py-1 text-xs border rounded hover:bg-slate-50">Edit</button>
-                    <button onClick={() => openPreview(b)} className="px-3 py-1 text-xs border rounded bg-white hover:bg-slate-50">Preview</button>
-                    <button onClick={() => openView(b)} className="px-3 py-1 text-xs border rounded">Open</button>
-                    <button onClick={() => openDetail(b)} className="px-3 py-1 text-xs border rounded">Details</button>
+                  <div className="mt-4 flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button onClick={() => openEdit(b)} className="px-3 py-1 text-xs border rounded hover:bg-slate-50">Edit</button>
+                      <button onClick={() => openPreview(b)} className="px-3 py-1 text-xs border rounded bg-white hover:bg-slate-50">Preview</button>
+                      <button onClick={() => openView(b)} className="px-3 py-1 text-xs border rounded">Open</button>
+                      <button onClick={() => openDetail(b)} className="px-3 py-1 text-xs border rounded">Details</button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => togglePublish(b)} className="px-3 py-1 text-xs border rounded">{b.is_published ? "Unpublish" : "Publish"}</button>
+                      <button onClick={() => handleDelete(b)} className="px-3 py-1 text-xs border rounded text-red-600">Delete</button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => togglePublish(b)} className="px-3 py-1 text-xs border rounded">{b.is_published ? "Unpublish" : "Publish"}</button>
-                    <button onClick={() => handleDelete(b)} className="px-3 py-1 text-xs border rounded text-red-600">Delete</button>
-                  </div>
-                </div>
-              </article>
-            ))
+                </article>
+              );
+            })
           )
         }
       </div>
@@ -728,7 +769,8 @@ function BlogEditor({ blog, onClose, onSaved }) {
   function insertImageToEditor(url) {
     if (!editor || !url) { toast.error("Editor not ready"); return; }
     try {
-      editor.chain().focus().setImage({ src: normalizeUploadUrl(url) }).run();
+      const finalUrl = toAbsoluteImageUrl(url) || url;
+      editor.chain().focus().setImage({ src: finalUrl }).run();
       toast.success("Image inserted");
     } catch (err) {
       console.warn("insertImageToEditor failed", err);
@@ -745,7 +787,6 @@ function BlogEditor({ blog, onClose, onSaved }) {
       const url = normalizeUploadUrl(publicUrl);
       insertImageToEditor(url);
 
-      // Attach to blog if it has an id
       let saved = null;
       if (form.id) {
         try {
@@ -793,7 +834,6 @@ function BlogEditor({ blog, onClose, onSaved }) {
         is_published: !!form.is_published
       };
 
-      // Ensure og_image is absolute
       if (payload.og_image) {
         payload.og_image = safeAbsoluteImageUrl(payload.og_image) || payload.og_image;
       }
@@ -961,17 +1001,18 @@ function BlogDetail({ blog, onClose, onChange }) {
 
   useEffect(() => {
     (async () => {
-      // Load full detail from Supabase
       try {
         const { data, error } = await supabase
           .from("blogs")
-          .select("*")
+          .select(`
+            *,
+            blog_images ( id, url, caption, created_at )
+          `)
           .eq("id", blog.id)
           .single();
         if (data) {
           setDetail(data);
-          // Load images
-          const imgs = await getBlogImages(blog.id);
+          const imgs = data.blog_images || [];
           setImages(imgs.map(i => ({ ...i, url: normalizeUploadUrl(i.url || i.public_url || i.path || "") })));
         }
       } catch (e) { /* ignore */ }
@@ -1179,7 +1220,7 @@ function BlogDetail({ blog, onClose, onChange }) {
               {images.length === 0 && <div className="text-slate-500">No images</div>}
               {images.map(img => (
                 <div key={img.id || img.url} className="flex items-center gap-2">
-                  <img src={safeAbsoluteImageUrl(normalizeUploadUrl(img.url) || img.url)} alt={img.caption || ""} className="w-20 h-14 object-cover rounded" />
+                  <img src={toAbsoluteImageUrl(img.url)} alt={img.caption || ""} className="w-20 h-14 object-cover rounded" />
                   <div className="flex-1">
                     <div className="text-sm">{img.caption || ""}</div>
                     <div className="text-xs text-slate-500">{img.created_at ? new Date(img.created_at).toLocaleString() : ""}</div>

@@ -1,4 +1,4 @@
-// src/lib/auth.js – Supabase‑powered auth client (uses shared supabase)
+// src/lib/auth.js
 import { supabase } from './supabaseClient';
 
 const createAuthClient = () => {
@@ -14,7 +14,7 @@ const createAuthClient = () => {
     });
   }
 
-  // Subscribe to Supabase auth changes
+  // Subscribe to auth changes (existing)
   const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT' || !session) {
       user = null;
@@ -28,7 +28,7 @@ const createAuthClient = () => {
     notify();
   });
 
-  // Load initial session
+  // Load initial session (existing)
   supabase.auth.getSession().then(({ data: { session } }) => {
     if (session) {
       user = session.user;
@@ -47,7 +47,7 @@ const createAuthClient = () => {
     notify();
   });
 
-  // Public API
+  // ----- Public API -----
   async function loginWithTokens({ accessToken: a, refreshToken: r, user: u }) {
     user = u || null;
     accessToken = a || null;
@@ -64,9 +64,23 @@ const createAuthClient = () => {
     notify();
   }
 
+  // Synchronous getters (cached)
   function isAuthenticated() { return !!accessToken; }
   function getAccessToken() { return accessToken; }
-  function getUser() { return user; }
+  function getUser() { return user; } // sync, returns cached user
+
+  // Async method to fetch fresh user from Supabase
+  async function fetchUser() {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) throw error;
+    // Update cached user if different
+    if (data.user) {
+      user = data.user;
+      notify();
+    }
+    return data.user;
+  }
+
   function setUser(u) { user = u; notify(); }
   function setAccessToken(t) { accessToken = t; notify(); }
   function subscribe(cb) {
@@ -115,7 +129,8 @@ const createAuthClient = () => {
   return {
     isAuthenticated,
     getAccessToken,
-    getUser,
+    getUser,      // sync (cached)
+    fetchUser,    // async (fetches fresh)
     loginWithTokens,
     logout,
     setUser,

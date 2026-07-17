@@ -177,39 +177,71 @@ export async function getCategories() {
 }
 
 // -------- Blogs --------
+// -------- Blogs --------
 export async function getBlogs(limit = 10) {
-  const { data, error } = await supabase
+  let query = supabase
     .from('blogs')
-    .select('*')
+    .select(`
+      *,
+      blog_images ( url, created_at )
+    `)
     .order('created_at', { ascending: false })
     .limit(limit);
+
+  const { data, error } = await query;
   if (error) throw error;
-  return data;
+
+  return (data || []).map(blog => {
+    const firstImage = blog.blog_images?.[0]?.url || null;
+    return {
+      ...blog,
+      primary_image: blog.og_image || firstImage,
+    };
+  });
 }
+
 export const getRecentBlogs = (limit = 6) => getBlogs(limit);
 
+// -------- Blogs --------
 export async function getBlogFlexible(blogId) {
-  const { data, error } = await supabase
+  // 1. Try to fetch by slug
+  const { data: slugData, error: slugError } = await supabase
     .from('blogs')
-    .select('*')
-    .or(`id.eq.${blogId},slug.eq.${blogId}`)
-    .single();
-  if (error) {
-    const { data: data2, error: error2 } = await supabase
-      .from('blogs')
-      .select('*')
-      .eq('id', blogId)
-      .single();
-    if (error2) {
-      const nf = new Error('not_found');
-      nf.status = 404;
-      throw nf;
-    }
-    return data2;
-  }
-  return data;
-}
+    .select(`
+      *,
+      blog_images ( url, created_at )
+    `)
+    .eq('slug', blogId)
+    .maybeSingle();
 
+  if (!slugError && slugData) {
+    const firstImage = slugData.blog_images?.[0]?.url || null;
+    return { ...slugData, primary_image: slugData.og_image || firstImage };
+  }
+
+  // 2. If slug not found, check if blogId is a valid UUID and try by id
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (uuidRegex.test(blogId)) {
+    const { data: idData, error: idError } = await supabase
+      .from('blogs')
+      .select(`
+        *,
+        blog_images ( url, created_at )
+      `)
+      .eq('id', blogId)
+      .maybeSingle();
+
+    if (!idError && idData) {
+      const firstImage = idData.blog_images?.[0]?.url || null;
+      return { ...idData, primary_image: idData.og_image || firstImage };
+    }
+  }
+
+  // 3. Nothing found
+  const nf = new Error('not_found');
+  nf.status = 404;
+  throw nf;
+}
 export async function createBlog(payload) {
   const { data, error } = await supabase
     .from('blogs')
@@ -649,4 +681,4 @@ export default {
 };
 
 // ✅ Expose the Supabase client for direct queries
-export { supabase };
+export { supabase };  
