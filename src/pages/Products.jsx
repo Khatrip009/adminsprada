@@ -2,24 +2,17 @@
 import React, { useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import LOGO from "../assets/SPRADA_LOGO.png";
-
-// toast
 import { Toaster, toast } from "react-hot-toast";
-
-// API helpers
 import {
   getCategories,
   getProducts,
-  apiPost,
-  apiPut,
-  apiDelete,
   uploadFile,
   createProductImage,
   getProductImages,
   deleteProductImage,
   patchProductImage,
   toAbsoluteImageUrl,
-  API_ORIGIN
+  supabase,
 } from "../lib/api";
 import clsx from "clsx";
 
@@ -71,26 +64,13 @@ function ensureFontsInjected() {
 }
 
 /* ---------------------------
-   Utility: robust categories loader
+   Utility: load categories with counts (using getCategories)
    --------------------------- */
 async function loadCategoriesWithCounts() {
   try {
-    const r1 = await getCategories({ include_counts: true });
-    if (Array.isArray(r1)) return r1;
-    if (r1?.categories) return r1.categories;
-  } catch (e) {}
-
-  try {
-    const r2 = await getCategories("?include_counts=true");
-    if (Array.isArray(r2)) return r2;
-    if (r2?.categories) return r2.categories;
-  } catch (e) {}
-
-  try {
-    const r3 = await getCategories();
-    if (Array.isArray(r3)) return r3;
-    if (r3?.categories) return r3.categories;
-    return [];
+    const data = await getCategories();
+    // data is array of categories (with product_count if included)
+    return Array.isArray(data) ? data : [];
   } catch (e) {
     console.warn("[loadCategoriesWithCounts] failed:", e);
     return [];
@@ -104,92 +84,17 @@ function TradeBadge({ trade }) {
   const t = (trade || "both").toLowerCase();
   if (t === "import") {
     return (
-      <span
-        className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-sky-100 text-sky-800"
-        aria-label="Import"
-        title="Import"
-      >
-        Import
-      </span>
+      <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-sky-100 text-sky-800">Import</span>
     );
   }
   if (t === "export") {
     return (
-      <span
-        className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-amber-100 text-amber-800"
-        aria-label="Export"
-        title="Export"
-      >
-        Export
-      </span>
+      <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-amber-100 text-amber-800">Export</span>
     );
   }
   return (
-    <span
-      className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-800"
-      aria-label="Both"
-      title="Both"
-    >
-      Both
-    </span>
+    <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-800">Both</span>
   );
-}
-
-/* ---------------------------
-   Image helpers
-   --------------------------- */
-
-function isLocalFilesystemPath(value) {
-  if (!value || typeof value !== "string") return false;
-  const v = value.toLowerCase();
-  if (v.startsWith("/mnt/")) return true;
-  if (v.startsWith("c:\\") || v.startsWith("d:\\")) return true;
-  if (v.startsWith("file://")) return true;
-  if (v.includes("\\users\\")) return true;
-  return false;
-}
-
-function safeAbsoluteImageUrl(raw) {
-  if (!raw || typeof raw !== "string") return null;
-  if (/^https?:\/\//i.test(raw)) return raw;
-  if (/^data:/i.test(raw)) return raw;
-  if (isLocalFilesystemPath(raw)) return null;
-  try {
-    const abs = toAbsoluteImageUrl(raw);
-    if (!abs) return null;
-    if (/\/mnt\//i.test(abs)) return null;
-    return abs;
-  } catch (e) {
-    return null;
-  }
-}
-
-function normalizeBeforeSave(payload = {}) {
-  const out = { ...payload };
-
-  function normField(v, space = "products") {
-    if (!v) return null;
-    if (isLocalFilesystemPath(v)) return null;
-    if (/^https?:\/\//i.test(v)) return v;
-    if (/^\/(?:src\/)?uploads\//i.test(v)) {
-      return `${API_ORIGIN}${v}`;
-    }
-    if (/^(?:src\/)?uploads\//i.test(v)) {
-      return `${API_ORIGIN}/${v.replace(/^\/+/, "")}`;
-    }
-    if (!v.startsWith("/")) {
-      return `${API_ORIGIN}/uploads/${space}/${v.replace(/^\/+/, "")}`;
-    }
-    return `${API_ORIGIN}${v}`;
-  }
-
-  if (out.og_image !== undefined) out.og_image = normField(out.og_image, "products");
-  if (out.primary_image !== undefined) out.primary_image = normField(out.primary_image, "products");
-  if (out.metadata && typeof out.metadata === "object" && out.metadata.og_image !== undefined) {
-    out.metadata = { ...out.metadata, og_image: normField(out.metadata.og_image, "products") };
-  }
-
-  return out;
 }
 
 /* ---------------------------
@@ -206,12 +111,10 @@ export default function ProductsPage() {
     <div className="min-h-screen flex bg-[color:var(--sprada-surface)] text-slate-800">
       <Toaster position="top-right" />
 
-      {/* Desktop sidebar */}
       <aside className="hidden md:block md:w-72">
         <Sidebar user={user} className="w-72" />
       </aside>
 
-      {/* Mobile sidebar drawer */}
       {mobileSidebarOpen && (
         <div className="fixed inset-0 z-40 md:hidden">
           <div className="absolute inset-0 bg-black/40" onClick={() => setMobileSidebarOpen(false)} />
@@ -224,7 +127,6 @@ export default function ProductsPage() {
       <main className="flex-1 p-4 md:p-6 max-w-full">
         <header className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-4">
-            {/* Mobile hamburger */}
             <button
               className="md:hidden p-2 rounded-lg border mr-1"
               aria-label="Open menu"
@@ -282,13 +184,11 @@ function ProductsAdmin() {
   async function refreshCategories() {
     try {
       const c = await loadCategoriesWithCounts();
-      const normalized = (c || []).map((x) => {
-        return {
-          ...x,
-          product_count: x.product_count ?? x.productCount ?? x.product_count ?? 0,
-          trade_type: x.trade_type || x.tradeType || "both",
-        };
-      });
+      const normalized = (c || []).map((x) => ({
+        ...x,
+        product_count: x.product_count ?? x.productCount ?? 0,
+        trade_type: x.trade_type || x.tradeType || "both",
+      }));
       setCats(normalized);
       return normalized;
     } catch (e) {
@@ -317,7 +217,7 @@ function ProductsAdmin() {
       const arr = Array.isArray(data) ? data : (data?.products || []);
       const normalized = (arr || []).map((p) => ({
         ...p,
-        primary_image: normalizeUploadUrl(p.primary_image || p.og_image || p.thumbnail || p.image || ""),
+        primary_image: p.primary_image || p.og_image || p.thumbnail || p.image || "",
         trade_type: p.trade_type ?? null,
         effective_trade_type: p.effective_trade_type ?? (p.category?.trade_type || "both"),
       }));
@@ -331,7 +231,7 @@ function ProductsAdmin() {
     }
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, limit, q, categoryFilter, order, tradeTypeFilter]);
+  useEffect(() => { load(); }, [page, limit, q, categoryFilter, order, tradeTypeFilter]);
 
   function openCreate() {
     setEditing({ title: "", slug: "", price: 0, currency: "USD", moq: 1, trade_type: null });
@@ -345,7 +245,8 @@ function ProductsAdmin() {
   async function onDelete(p) {
     if (!confirm(`Delete "${p.title}"?`)) return;
     try {
-      await apiDelete(`/products/${encodeURIComponent(p.id)}`);
+      const { error } = await supabase.from('products').delete().eq('id', p.id);
+      if (error) throw error;
       setProducts((prev) => prev.filter((x) => x.id !== p.id));
       setMessage("Deleted");
       setTimeout(() => setMessage(""), 2500);
@@ -455,31 +356,34 @@ function ProductsAdmin() {
           ? Array.from({ length: limit }).map((_, i) => <div key={i} className="h-44 bg-gray-100 animate-pulse rounded-2xl" />)
           : products.length === 0
           ? <div className="text-sm text-[color:var(--sprada-muted)]">No products</div>
-          : products.map((p) => (
-              <article key={p.id} className="bg-white border rounded-2xl p-4 hover:shadow-md transition-transform transform hover:-translate-y-1">
-                <div className="flex items-start gap-4">
-                  <div className="w-28 h-28 bg-gray-50 rounded-lg overflow-hidden flex items-center justify-center flex-shrink-0">
-                    {p.primary_image ? <img src={safeAbsoluteImageUrl(normalizeUploadUrl(p.primary_image))} alt={p.title} className="w-full h-full object-cover" onError={(e)=>{e.currentTarget.src=''}} /> : <div className="text-xs text-[color:var(--sprada-muted)]">No image</div>}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="sprada-heading font-medium text-slate-800 line-clamp-2">{p.title}</h3>
-                    <p className="text-xs text-[color:var(--sprada-muted)] mt-1 line-clamp-2">{p.short_description}</p>
-                    <div className="mt-3 flex items-center gap-3">
-                      <div className="text-xs text-[color:var(--sprada-muted)]">{p.category?.name || "—"}</div>
-                      <TradeBadge trade={p.trade_type || p.effective_trade_type || "both"} />
+          : products.map((p) => {
+              const imgUrl = toAbsoluteImageUrl(p.primary_image);
+              return (
+                <article key={p.id} className="bg-white border rounded-2xl p-4 hover:shadow-md transition-transform transform hover:-translate-y-1">
+                  <div className="flex items-start gap-4">
+                    <div className="w-28 h-28 bg-gray-50 rounded-lg overflow-hidden flex items-center justify-center flex-shrink-0">
+                      {p.primary_image ? <img src={imgUrl} alt={p.title} className="w-full h-full object-cover" /> : <div className="text-xs text-[color:var(--sprada-muted)]">No image</div>}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="sprada-heading font-medium text-slate-800 line-clamp-2">{p.title}</h3>
+                      <p className="text-xs text-[color:var(--sprada-muted)] mt-1 line-clamp-2">{p.short_description}</p>
+                      <div className="mt-3 flex items-center gap-3">
+                        <div className="text-xs text-[color:var(--sprada-muted)]">{p.category?.name || "—"}</div>
+                        <TradeBadge trade={p.trade_type || p.effective_trade_type || "both"} />
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="mt-4 flex items-center justify-between">
-                  <div className="text-sm font-semibold">{p.price ? `${p.currency || "₹"} ${p.price}` : "-"}</div>
-                  <div className="flex items-center gap-2">
-                    <button className="text-xs px-2 py-1 border rounded hover:bg-slate-50" onClick={() => openEdit(p)}>Edit</button>
-                    <button className="text-xs px-2 py-1 border rounded text-red-600 hover:bg-red-50" onClick={() => onDelete(p)}>Delete</button>
+                  <div className="mt-4 flex items-center justify-between">
+                    <div className="text-sm font-semibold">{p.price ? `${p.currency || "₹"} ${p.price}` : "-"}</div>
+                    <div className="flex items-center gap-2">
+                      <button className="text-xs px-2 py-1 border rounded hover:bg-slate-50" onClick={() => openEdit(p)}>Edit</button>
+                      <button className="text-xs px-2 py-1 border rounded text-red-600 hover:bg-red-50" onClick={() => onDelete(p)}>Delete</button>
+                    </div>
                   </div>
-                </div>
-              </article>
-            ))
+                </article>
+              );
+            })
         }
       </div>
 
@@ -517,7 +421,7 @@ function ProductsAdmin() {
 }
 
 /* -------------------------
-   ProductForm component
+   ProductForm (uses Supabase helpers)
    ------------------------- */
 function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
   const [form, setForm] = useState({ ...(product || {}) });
@@ -537,7 +441,7 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
         try {
           const imgs = await getProductImages(product.id);
           const arr = Array.isArray(imgs) ? imgs : (imgs?.items || imgs?.images || imgs?.data || []);
-          setImages((arr || []).map((i) => ({ ...i, url: normalizeUploadUrl(i.url || i.public_url || i.path || i.address || "") })));
+          setImages((arr || []).map((i) => ({ ...i, url: i.url || i.public_url || i.path || i.address || "" })));
         } catch (e) {
           console.warn(e);
           setImages([]);
@@ -556,17 +460,45 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
         return;
       }
       setBusy(true);
-      let res;
-      const payloadPrepared = normalizeBeforeSave({
-        ...form,
-        trade_type: form.trade_type ?? null,
-      });
+      let created;
 
-      if (form.id) res = await apiPut(`/products/${encodeURIComponent(form.id)}`, payloadPrepared);
-      else res = await apiPost("/products", payloadPrepared);
+      const payload = {
+        title: form.title,
+        slug: form.slug,
+        price: Number(form.price) || 0,
+        currency: form.currency || "USD",
+        description: form.description || "",
+        short_description: form.short_description || "",
+        category_id: form.category_id || null,
+        moq: Number(form.moq) || 1,
+        available_qty: Number(form.available_qty) || 0,
+        trade_type: form.trade_type || null,
+        og_image: form.og_image || null,
+        metadata: form.metadata || {},
+        is_published: false,
+      };
 
-      const created = res && (res.product || res.product_id || res.id) ? (res.product || res) : res;
-      toast.success("Product saved");
+      if (form.id) {
+        const { data, error } = await supabase
+          .from('products')
+          .update(payload)
+          .eq('id', form.id)
+          .select()
+          .single();
+        if (error) throw error;
+        created = data;
+        toast.success("Product updated");
+      } else {
+        const { data, error } = await supabase
+          .from('products')
+          .insert(payload)
+          .select()
+          .single();
+        if (error) throw error;
+        created = data;
+        toast.success("Product created");
+      }
+
       onSaved && onSaved(created);
     } catch (e) {
       console.error(e);
@@ -585,7 +517,7 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
 
     setErr(''); 
     setBusy(true);
-    const uploadingToastId = toast.loading('Uploading image…');
+    const toastId = toast.loading('Uploading image…');
 
     try {
       const resp = await createProductImage(form.id, file, images.length === 0);
@@ -596,17 +528,11 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
           url: created.url || created.publicUrl
         }, ...prev]);
       }
-      toast.success('Image uploaded', { id: uploadingToastId });
+      toast.success('Image uploaded', { id: toastId });
     } catch (e) {
       console.error(e);
-      const isMulterLimit = e?.message?.includes('file too large') || e?.data?.error === 'file_too_large';
-      if (isMulterLimit) {
-        toast.error('File too large (max 50MB)', { id: uploadingToastId });
-        setErr('File too large');
-      } else {
-        toast.error('Upload failed', { id: uploadingToastId });
-        setErr('Upload failed');
-      }
+      toast.error('Upload failed', { id: toastId });
+      setErr('Upload failed');
     } finally {
       setBusy(false);
     }
@@ -622,7 +548,7 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
       await patchProductImage(img.id, { is_primary: true });
       const imgs = await getProductImages(form.id);
       const arr = Array.isArray(imgs) ? imgs : (imgs?.items || imgs?.images || imgs?.data || []);
-      setImages((arr || []).map((i) => ({ ...i, url: normalizeUploadUrl(i.url || i.public_url || i.path || "") })));
+      setImages((arr || []).map((i) => ({ ...i, url: i.url || i.public_url || i.path || "" })));
       toast.success("Primary image set");
     } catch (e) {
       console.warn(e);
@@ -651,7 +577,7 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center p-4 md:p-6">
       <div className="absolute inset-0 bg-black/30" onClick={() => { if (!busy) onClose(); }} />
-      <div role="dialog" aria-modal="true" aria-label={form.id ? "Edit Product" : "Create Product"} className="relative bg-white rounded-2xl shadow-lg w-full max-w-full md:max-w-3xl p-4 md:p-5 z-10 mx-2 md:mx-0 overflow-auto max-h-[92vh]">
+      <div role="dialog" className="relative bg-white rounded-2xl shadow-lg w-full max-w-full md:max-w-3xl p-4 md:p-5 z-10 mx-2 md:mx-0 overflow-auto max-h-[92vh]">
         <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <div className="flex items-center gap-3">
             <img src={LOGO} alt="Sprada" className="w-20 md:w-28 object-contain" />
@@ -714,7 +640,7 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
 
         <div className="mt-4 flex items-center gap-4 flex-wrap">
           <div className="w-28 h-28 bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center">
-            {form.og_image ? <img src={safeAbsoluteImageUrl(normalizeUploadUrl(form.og_image))} alt="" className="w-full h-full object-cover" /> : <div className="text-xs text-[color:var(--sprada-muted)]">No image</div>}
+            {form.og_image ? <img src={toAbsoluteImageUrl(form.og_image)} alt="" className="w-full h-full object-cover" /> : <div className="text-xs text-[color:var(--sprada-muted)]">No image</div>}
           </div>
 
           <div>
@@ -722,14 +648,14 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
               Upload image
               <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && onFileSelected(e.target.files[0])} />
             </label>
-            <div className="text-xs text-[color:var(--sprada-muted)] mt-2">Uploads try S3 first, then fall back to local server if S3 not configured.</div>
+            <div className="text-xs text-[color:var(--sprada-muted)] mt-2">Uploads use Supabase Storage.</div>
           </div>
         </div>
 
         <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-3">
           {images.map((img) => (
             <div key={img.id || img.url} className="border rounded-lg p-2 relative hover:shadow-sm transition">
-              <img src={safeAbsoluteImageUrl(normalizeUploadUrl(img.url || img.path || img.public_url || ""))} alt="" className="w-full h-28 object-cover rounded" />
+              <img src={toAbsoluteImageUrl(img.url)} alt="" className="w-full h-28 object-cover rounded" />
               <div className="flex items-center justify-between mt-2">
                 <button onClick={() => setPrimary(img)} className={`text-xs px-2 py-1 border rounded ${img.is_primary ? "bg-[color:var(--sprada-accent)] text-white" : ""}`}>{img.is_primary ? "Primary" : "Set Primary"}</button>
                 <button onClick={() => removeImage(img)} className="text-xs px-2 py-1 border rounded text-red-600">Delete</button>
@@ -743,7 +669,7 @@ function ProductForm({ product = {}, categories = [], onClose, onSaved }) {
 }
 
 /* -------------------------
-   CategoriesManager (with image upload)
+   CategoriesManager – Supabase only
    ------------------------- */
 function CategoriesManager({ initialCategories = [], onClose, onChange }) {
   const [categories, setCategories] = useState(initialCategories || []);
@@ -787,26 +713,29 @@ function CategoriesManager({ initialCategories = [], onClose, onChange }) {
         description: editing.description || undefined,
         parent_id: editing.parent_id || undefined,
         trade_type: editing.trade_type || "both",
-        image: editing.image || null // image path (e.g., "categories/xxx.jpg")
+        image: editing.image || null,
       };
 
       if (editing.id) {
-        await apiPut(`/categories/${encodeURIComponent(editing.id)}`, payload);
-        const updated = categories.map((c) =>
-          c.id === editing.id ? { ...c, ...payload } : c
-        );
+        const { data, error } = await supabase
+          .from('categories')
+          .update(payload)
+          .eq('id', editing.id)
+          .select()
+          .single();
+        if (error) throw error;
+        const updated = categories.map(c => c.id === editing.id ? { ...c, ...payload } : c);
         setCategories(updated);
         setMsg("Updated");
         toast.success("Category updated");
       } else {
-        const created = await apiPost("/categories", payload);
-        const createdRow = (created && created.category) ? created.category : created;
-        if (createdRow && createdRow.id) {
-          setCategories((prev) => [createdRow, ...prev]);
-        } else {
-          const c = await loadCategoriesWithCounts();
-          setCategories(Array.isArray(c) ? c : categories);
-        }
+        const { data, error } = await supabase
+          .from('categories')
+          .insert(payload)
+          .select()
+          .single();
+        if (error) throw error;
+        setCategories(prev => [data, ...prev]);
         setMsg("Created");
         toast.success("Category created");
       }
@@ -826,8 +755,9 @@ function CategoriesManager({ initialCategories = [], onClose, onChange }) {
     if (!confirm(`Delete category "${cat.name}"? This will NOT delete products but may unset their category.`)) return;
     try {
       setBusy(true);
-      await apiDelete(`/categories/${encodeURIComponent(cat.id)}`);
-      setCategories((prev) => prev.filter((c) => c.id !== cat.id));
+      const { error } = await supabase.from('categories').delete().eq('id', cat.id);
+      if (error) throw error;
+      setCategories(prev => prev.filter(c => c.id !== cat.id));
       setMsg("Deleted");
       toast.success("Category deleted");
       if (typeof onChange === "function") onChange();
@@ -845,19 +775,8 @@ function CategoriesManager({ initialCategories = [], onClose, onChange }) {
     if (!file) return;
     setUploadingImage(true);
     try {
-      // Upload to 'categories' space using your existing uploadFile
-      const result = await uploadFile(file, { space: 'categories' });
-      // result should be a path like "categories/xxx.jpg" or a full URL
-      // store the path (relative) – your backend expects something like "categories/xxx.jpg"
-      // If result is a full URL, extract the path after the bucket
-      let imagePath = result;
-      if (typeof result === 'string' && result.startsWith('http')) {
-        // Try to extract the relative path
-        const match = result.match(/\/storage\/v1\/object\/public\/[^/]+\/(.+)$/);
-        if (match) imagePath = match[1];
-        else imagePath = result;
-      }
-      setEditing(prev => ({ ...prev, image: imagePath }));
+      const path = await uploadFile(file, { space: 'categories' });
+      setEditing(prev => ({ ...prev, image: path }));
       toast.success('Category image uploaded');
     } catch (err) {
       console.error('Category image upload failed:', err);
@@ -893,7 +812,7 @@ function CategoriesManager({ initialCategories = [], onClose, onChange }) {
                 <div className="flex items-center gap-3">
                   {cat.image ? (
                     <img
-                      src={safeAbsoluteImageUrl(cat.image)}
+                      src={toAbsoluteImageUrl(cat.image)}
                       alt={cat.name}
                       className="w-10 h-10 object-cover rounded-full"
                       onError={(e) => e.target.style.display = 'none'}
@@ -971,7 +890,7 @@ function CategoriesManager({ initialCategories = [], onClose, onChange }) {
                 <div className="flex items-center gap-3 mt-1">
                   {editing?.image ? (
                     <img
-                      src={safeAbsoluteImageUrl(editing.image)}
+                      src={toAbsoluteImageUrl(editing.image)}
                       alt="category preview"
                       className="w-16 h-16 object-cover rounded border"
                       onError={(e) => e.target.style.display = 'none'}

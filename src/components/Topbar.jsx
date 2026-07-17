@@ -3,7 +3,7 @@ import React, { useEffect, useState } from "react";
 import { FiSearch, FiBell, FiChevronDown, FiLogOut, FiMoon, FiSun } from "react-icons/fi";
 import { useNavigate } from "react-router-dom";
 import NotificationCenter from "./NotificationCenter";
-import { auth } from "../App";
+import { logout as apiLogout } from "../lib/api";
 
 // IMPORT LOGO
 import Logo from "../assets/SPRADA_LOGO.png";
@@ -73,24 +73,18 @@ export default function Topbar({ onSearch }) {
   }, []);
 
   // -------------------------------
-  // LOGOUT HANDLER
+  // LOGOUT HANDLER (using Supabase)
   // -------------------------------
-  const handleLogout = () => {
-    localStorage.removeItem("accessToken");
-    localStorage.removeItem("refreshToken");
-    localStorage.removeItem("user");
-
+  const handleLogout = async () => {
     try {
-      if (auth && typeof auth.logout === "function") auth.logout();
-      else {
-        if (typeof auth.setAuthenticated === "function")
-          auth.setAuthenticated(false);
-        if (typeof auth.setUser === "function") auth.setUser(null);
-      }
+      await apiLogout(); // clears Supabase session and localStorage
     } catch (e) {
-      console.warn("auth logout hook failed", e);
+      console.warn("Logout failed, forcing cleanup", e);
+      // Fallback: clear storage manually
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("refreshToken");
+      localStorage.removeItem("user");
     }
-
     navigate("/login", { replace: true });
   };
 

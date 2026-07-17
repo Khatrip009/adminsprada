@@ -4,11 +4,11 @@ import Sidebar from "../components/Sidebar";
 import LOGO from "../assets/SPRADA_LOGO.png";
 import toast, { Toaster } from "react-hot-toast";
 import {
-  apiGet,
-  apiPost,
-  apiPut,
-  apiDelete,
   getCategories,
+  getLeadNotes,
+  addLeadNote,
+  updateLead,
+  supabase,
 } from "../lib/api";
 import dayjs from "dayjs";
 import {
@@ -65,10 +65,11 @@ function LeadDetailModal({ open, lead, onClose, onStatusChange, onLeadUpdated })
     if (!open || !lead) return;
     let mounted = true;
     setLoadingNotes(true);
-    apiGet(`/leads/${encodeURIComponent(lead.id)}/notes`)
+    getLeadNotes(lead.id)
       .then((res) => {
         if (!mounted) return;
-        setNotes(res?.notes || res?.data || []);
+        // getLeadNotes returns an array of notes
+        setNotes(res || []);
       })
       .catch(() => {
         if (mounted) setNotes([]);
@@ -92,9 +93,9 @@ function LeadDetailModal({ open, lead, onClose, onStatusChange, onLeadUpdated })
     const txt = note.trim();
     setNote("");
     try {
-      const res = await apiPost(`/leads/${encodeURIComponent(lead.id)}/notes`, { note: txt });
-      if (res?.note) setNotes((p) => [res.note, ...p]);
-      else if (res?.data) setNotes((p) => [res.data, ...p]);
+      const newNote = await addLeadNote(lead.id, { note: txt });
+      // newNote is the created note object
+      setNotes((p) => [newNote, ...p]);
       toast.success("Note added");
     } catch (e) {
       console.error("add note", e);
@@ -105,8 +106,8 @@ function LeadDetailModal({ open, lead, onClose, onStatusChange, onLeadUpdated })
   async function changeStatus(newStatus) {
     setBusyStatus(true);
     try {
-      const res = await apiPut(`/leads/${encodeURIComponent(lead.id)}`, { status: newStatus });
-      const updated = res?.lead || res?.data || { ...lead, status: newStatus };
+      const updated = await updateLead(lead.id, { status: newStatus });
+      // updated is the full lead object
       onStatusChange && onStatusChange(lead.id, newStatus);
       onLeadUpdated && onLeadUpdated(updated);
       toast.success("Status updated");
@@ -295,13 +296,29 @@ function LeadFormModal({ open, initial = null, onClose, onSaved }) {
     setBusy(true);
     try {
       if (isEdit) {
-        const res = await apiPut(`/leads/${encodeURIComponent(initial.id)}`, form);
+        // Use updateLead function
+        const updated = await updateLead(initial.id, form);
         toast.success("Lead updated");
-        onSaved && onSaved(res?.lead || res?.data || { ...initial, ...form });
+        onSaved && onSaved(updated);
       } else {
-        const res = await apiPost("/leads", form);
+        // Insert new lead using supabase
+        const { data, error } = await supabase
+          .from('leads')
+          .insert({
+            name: form.name,
+            email: form.email,
+            phone: form.phone || null,
+            company: form.company || null,
+            country: form.country || null,
+            product_interest: form.product_interest || null,
+            message: form.message || null,
+            status: form.status || "new",
+          })
+          .select()
+          .single();
+        if (error) throw error;
         toast.success("Lead created");
-        onSaved && onSaved(res?.lead || res?.data || res);
+        onSaved && onSaved(data);
       }
       onClose && onClose();
     } catch (e) {
@@ -421,14 +438,23 @@ export default function LeadsPage() {
   async function load() {
     setLoading(true);
     try {
-      const qs = [];
-      if (q) qs.push(`q=${encodeURIComponent(q)}`);
-      if (status && status !== "all") qs.push(`status=${encodeURIComponent(status)}`);
-      qs.push(`page=${page}`);
-      qs.push(`limit=${limit}`);
-      const query = qs.length ? `?${qs.join("&")}` : "";
-      const res = await apiGet(`/leads${query}`);
-      setLeads(res?.leads || res?.data?.leads || res || []);
+      // Build Supabase query
+      let query = supabase
+        .from('leads')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .range((page - 1) * limit, page * limit - 1);
+
+      if (q) {
+        query = query.or(`name.ilike.%${q}%,email.ilike.%${q}%,company.ilike.%${q}%`);
+      }
+      if (status && status !== 'all') {
+        query = query.eq('status', status);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      setLeads(data || []);
     } catch (e) {
       console.error("load leads", e);
       toast.error("Failed to load leads");
@@ -437,14 +463,10 @@ export default function LeadsPage() {
     }
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, status, q]); // reload on filter/page change
 
-  // Derived filtered list
-  const filtered = (leads || []).filter((l) => {
-    if (status !== "all" && l.status !== status) return false;
-    if (q && !String((l.name || "") + (l.email || "") + (l.company || "")).toLowerCase().includes(q.toLowerCase())) return false;
-    return true;
-  });
+  // Derived filtered list (though we already filter in query, we'll keep for safety)
+  const filtered = leads || [];
 
   function openLead(l) {
     setSelectedLead(l);
@@ -470,7 +492,11 @@ export default function LeadsPage() {
     e?.stopPropagation?.();
     if (!window.confirm(`Delete lead "${lead.name}"? This cannot be undone.`)) return;
     try {
-      await apiDelete(`/leads/${encodeURIComponent(lead.id)}`);
+      const { error } = await supabase
+        .from('leads')
+        .delete()
+        .eq('id', lead.id);
+      if (error) throw error;
       setLeads((p) => p.filter((x) => x.id !== lead.id));
       toast.success("Lead deleted");
     } catch (err) {

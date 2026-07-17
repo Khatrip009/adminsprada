@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useRef, useEffect } from "react";
+import React from "react";
 import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 
@@ -8,101 +8,50 @@ import Dashboard from "./pages/Dashboard";
 import Products from "./pages/Products";
 import Blogs from "./pages/Blogs";
 import BlogEditorPage from "./pages/BlogEditorPage";
-import UserPage from "./pages/UserPage";
+import UserPage from "./pages/UserPage"; // Ensure this matches your file name (UsersPage.jsx)
 import { AuthProvider, useAuth } from "./context/AuthProvider";
 export { auth } from "./lib/auth";
 import LeadsPage from "./pages/LeadsPage";
-import Topbar from "./components/Topbar";
 import ErrorPage from "./pages/ErrorPage";
 
-// SAFE RequireAuth
+// Protected route wrapper
 function RequireAuth({ children }) {
   const { user } = useAuth();
   if (!user) return <Navigate to="/login" replace />;
   return children;
 }
 
-// DashboardLayout (unchanged logic)
-function DashboardLayout({ children }) {
-  const authCtx = useAuth();
-  const user = authCtx?.user || JSON.parse(localStorage.getItem("user") || "null");
-  const logout = authCtx?.logout || (() => {
-    localStorage.clear();
-    window.location.href = "/login";
-  });
-
-  const topbarRef = useRef(null);
-
-  useEffect(() => {
-    const DEFAULT_HEADER = 72;
-    const measure = () => {
-      try {
-        const el = topbarRef.current || document.querySelector(".app-topbar");
-        const height = el && el.offsetHeight ? el.offsetHeight : DEFAULT_HEADER;
-        document.documentElement.style.setProperty("--app-header-height", `${height}px`);
-      } catch {
-        document.documentElement.style.setProperty("--app-header-height", `${DEFAULT_HEADER}px`);
-      }
-    };
-    measure();
-    window.addEventListener("resize", measure);
-    let ro = null;
-    try {
-      if (window.ResizeObserver && topbarRef.current) {
-        ro = new ResizeObserver(measure);
-        ro.observe(topbarRef.current);
-      }
-    } catch (e) { /* ignore */ }
-    return () => {
-      window.removeEventListener("resize", measure);
-      try { if (ro && topbarRef.current) ro.unobserve(topbarRef.current); } catch (_) {}
-    };
-  }, []);
-
-  return (
-    <div className="min-h-screen bg-slate-50">
-      <div ref={topbarRef} className="app-topbar">
-        <Topbar user={user} onLogout={logout} />
-      </div>
-      <main className="p-6">{children}</main>
-    </div>
-  );
-}
-
 export default function App() {
   return (
     <HashRouter>
-      {/* AuthProvider inside router so provider can use navigation if needed */}
       <AuthProvider>
-        {/* Global toaster for centralized toast messages */}
         <Toaster position="top-right" />
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
 
+          {/* Protected routes – each page is self‑contained */}
           <Route
             path="/dashboard"
             element={
               <RequireAuth>
-                <DashboardLayout><Dashboard /></DashboardLayout>
+                <Dashboard />
               </RequireAuth>
             }
           />
-
           <Route
             path="/dashboard/products"
             element={
               <RequireAuth>
-                <DashboardLayout><Products /></DashboardLayout>
+                <Products />
               </RequireAuth>
             }
           />
-
           <Route
             path="/dashboard/blogs"
             element={
               <RequireAuth>
-                <DashboardLayout><Blogs /></DashboardLayout>
+                <Blogs />
               </RequireAuth>
             }
           />
@@ -110,7 +59,7 @@ export default function App() {
             path="/dashboard/blogs/new"
             element={
               <RequireAuth>
-                <DashboardLayout><BlogEditorPage mode="new" /></DashboardLayout>
+                <BlogEditorPage mode="new" />
               </RequireAuth>
             }
           />
@@ -118,16 +67,15 @@ export default function App() {
             path="/dashboard/blogs/edit/:id"
             element={
               <RequireAuth>
-                <DashboardLayout><BlogEditorPage mode="edit" /></DashboardLayout>
+                <BlogEditorPage mode="edit" />
               </RequireAuth>
             }
           />
-
           <Route
             path="/dashboard/leads"
             element={
               <RequireAuth>
-                <DashboardLayout><LeadsPage /></DashboardLayout>
+                <LeadsPage />
               </RequireAuth>
             }
           />
@@ -135,13 +83,20 @@ export default function App() {
             path="/dashboard/users"
             element={
               <RequireAuth>
-                <DashboardLayout><UserPage /></DashboardLayout>
+                <UserPage />
               </RequireAuth>
             }
           />
 
-          <Route path="/error" element={<ErrorPage status={500} title="Server error" message="Something went wrong on the server." />} />
-          <Route path="*" element={<ErrorPage status={404} title="Page not found" message="The page you're looking for doesn't exist." />} />
+          {/* Error routes */}
+          <Route
+            path="/error"
+            element={<ErrorPage status={500} title="Server error" message="Something went wrong on the server." />}
+          />
+          <Route
+            path="*"
+            element={<ErrorPage status={404} title="Page not found" message="The page you're looking for doesn't exist." />}
+          />
         </Routes>
       </AuthProvider>
     </HashRouter>

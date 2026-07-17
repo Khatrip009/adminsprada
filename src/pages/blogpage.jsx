@@ -3,19 +3,15 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useLocation } from "react-router-dom";
 import DOMPurify from "dompurify";
 import dayjs from "dayjs";
-import { apiGet, toAbsoluteImageUrl } from "../lib/api";
+import { supabase, toAbsoluteImageUrl } from "../lib/api";
+import auth from "../lib/auth";
 
 /* ------------------------------
    Data Extract Helpers
 -------------------------------- */
 function safeExtractBlog(res) {
-  if (!res) return null;
-  if (res.blog) return res.blog;
-  if (res.data && res.data.blog) return res.data.blog;
-  if (res.data && res.data.content) return res.data;
-  if (res.id && (res.title || res.content)) return res;
-  if (res.ok && res.blog) return res.blog;
-  return null;
+  // Not needed anymore, but kept for compatibility
+  return res;
 }
 
 function slugify(text = "") {
@@ -64,7 +60,7 @@ function renderInlineText(text = "") {
 }
 
 /* ------------------------------
-   BlockRenderer with URL Fixes
+   BlockRenderer with URL Fixes (unchanged)
 -------------------------------- */
 function BlockRenderer({ block }) {
   if (!block) return null;
@@ -166,7 +162,6 @@ function BlockRenderer({ block }) {
     case "embed":
       return (
         <div className="my-6 aspect-video rounded overflow-hidden">
-          {/* wrapper ensures responsive aspect ratio */}
           <iframe
             title={block.provider || "embed"}
             src={block.src}
@@ -214,7 +209,21 @@ export default function BlogPage() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState(null);
 
-  /* Fetch blog */
+  // Determine if user is logged in (for preview)
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const user = await auth.getUser();
+        setIsLoggedIn(!!user);
+      } catch {
+        setIsLoggedIn(false);
+      }
+    };
+    checkAuth();
+  }, []);
+
+  /* Fetch blog from Supabase */
   useEffect(() => {
     let mounted = true;
     setLoading(true);
@@ -222,69 +231,61 @@ export default function BlogPage() {
 
     (async () => {
       try {
-        const basePath = `/blogs/${encodeURIComponent(slug)}`;
-        const path = isPreview ? `${basePath}?preview=true` : basePath;
-
-        const res = await apiGet(path);
-        let b = safeExtractBlog(res);
-
-        if (!b) {
-          // fallback — /blogs/slug/:slug
-          try {
-            const r2 = await apiGet(`/blogs/slug/${encodeURIComponent(slug)}${isPreview ? "?preview=true" : ""}`);
-            b = safeExtractBlog(r2);
-          } catch (_) {
-            b = null;
-          }
+        // Build the query
+        let query = supabase.from("blogs").select("*").eq("slug", slug);
+        // If not preview or user not logged in, only show published
+        if (!isPreview || !isLoggedIn) {
+          query = query.eq("is_published", true);
         }
+        const { data, error } = await query.single();
 
-        if (!b) {
-          // Last fallback: list endpoint filter
-          try {
-            const r3 = await apiGet(`/blogs?slug=${encodeURIComponent(slug)}&limit=1`);
-            b = r3?.blogs?.[0] || null;
-          } catch (_) {
-            b = null;
+        if (error) {
+          if (error.code === "PGRST116") {
+            // no rows found – try fallback by id (if slug is a UUID)
+            const { data: dataById, error: errorById } = await supabase
+              .from("blogs")
+              .select("*")
+              .eq("id", slug)
+              .maybeSingle();
+            if (dataById) {
+              setBlog(normalizeBlog(dataById));
+              setLoading(false);
+              return;
+            }
+            setErrorMsg("Not found");
+          } else {
+            throw error;
           }
+        } else {
+          setBlog(normalizeBlog(data));
         }
-
-        if (b) {
-          if (!mounted) return;
-
-          // Normalize common image fields to absolute URLs
-          if (b.og_image) b.og_image = toAbsoluteImageUrl(b.og_image);
-          if (b.author?.avatar) b.author.avatar = toAbsoluteImageUrl(b.author.avatar);
-
-          // Normalize lead/hero if present
-          if (b.content?.lead?.hero_image?.url) {
-            b.content.lead.hero_image.url = toAbsoluteImageUrl(b.content.lead.hero_image.url);
-          }
-
-          setBlog(b);
-          setLoading(false);
-          return;
-        }
-
-        if (!mounted) return;
-        setErrorMsg("Not found");
         setLoading(false);
       } catch (err) {
         if (!mounted) return;
-
         if (isPreview && err?.status === 401) {
           setErrorMsg("Preview not available — please sign in to view unpublished posts.");
-        } else if (err?.status === 404) {
-          setErrorMsg("Post not found");
         } else {
           setErrorMsg("Failed to load post");
         }
-
         setLoading(false);
       }
     })();
 
     return () => { mounted = false; };
-  }, [slug, isPreview]);
+  }, [slug, isPreview, isLoggedIn]);
+
+  // Normalize image URLs
+  function normalizeBlog(raw) {
+    if (!raw) return null;
+    const b = { ...raw };
+    if (b.og_image) b.og_image = toAbsoluteImageUrl(b.og_image);
+    if (b.author?.avatar) b.author.avatar = toAbsoluteImageUrl(b.author.avatar);
+    if (b.content?.lead?.hero_image?.url) {
+      b.content.lead.hero_image.url = toAbsoluteImageUrl(b.content.lead.hero_image.url);
+    }
+    // Normalize any image URLs inside blocks (will be handled by BlockRenderer)
+    return b;
+  }
 
   /* Loading + Error UI */
   if (loading) {
@@ -319,7 +320,7 @@ export default function BlogPage() {
   const author = lead.author || blog?.author || {};
   const publishedAt = lead.published_at || blog?.published_at || blog?.created_at;
 
-  // reading time heuristic (fallback)
+  // reading time heuristic
   const readingTime = content.meta?.reading_time_min || Math.max(1, Math.round(JSON.stringify(content || "").length / 800));
 
   /* Build TOC */
@@ -338,13 +339,12 @@ export default function BlogPage() {
     return items;
   }, [content]);
 
-  /* Scroll to hash when loaded */
+  /* Scroll to hash */
   useEffect(() => {
     if (!location.hash) return;
     const id = decodeURIComponent(location.hash.replace("#", ""));
     const el = document.getElementById(id);
     if (el) {
-      // small timeout to let layout settle
       setTimeout(() => el.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
     }
   }, [location.hash, blog]);
@@ -403,7 +403,7 @@ export default function BlogPage() {
                 </div>
               </div>
 
-              {!blog.published_at && <div className="mt-2 sm:mt-0 ml-auto sm:ml-0 px-2 py-1 rounded bg-gray-800 text-white text-xs">Draft</div>}
+              {!blog.is_published && <div className="mt-2 sm:mt-0 ml-auto sm:ml-0 px-2 py-1 rounded bg-gray-800 text-white text-xs">Draft</div>}
             </div>
           </div>
         </div>

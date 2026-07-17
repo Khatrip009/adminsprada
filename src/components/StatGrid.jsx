@@ -9,29 +9,29 @@ export default function StatGrid({ visitors, reviewsStats, products, blogs }) {
 
       <MetricCard
         title="Total Visitors"
-        value={visitors?.total_visitors || 0}
-        delta="+live"
+        value={visitors?.total ?? 0}
+        delta={visitors?.today ? `+${visitors.today} today` : "+0 today"}
         icon={<FiUsers />}
       />
 
       <MetricCard
         title="Products"
-        value={products?.length || 0}
+        value={products?.length ?? 0}
         delta="+active"
         icon={<FiPackage />}
       />
 
       <MetricCard
         title="Blogs"
-        value={blogs?.length || 0}
+        value={blogs?.length ?? 0}
         delta="+published"
         icon={<FiFileText />}
       />
 
       <MetricCard
         title="Avg Rating"
-        value={reviewsStats?.avg_rating || "0.0"}
-        delta={reviewsStats?.total ? `${reviewsStats.total} reviews` : "+0"}
+        value={reviewsStats?.average?.toFixed(1) ?? "0.0"}
+        delta={reviewsStats?.total ? `${reviewsStats.total} reviews` : "+0 reviews"}
         icon={<FiStar />}
       />
 

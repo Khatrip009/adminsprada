@@ -1,687 +1,652 @@
-// src/lib/api.js
-// Robust frontend API helper with automatic token refresh + normalization.
-// Space-aware uploads: POST to /api/uploads/<space> and serve files from /uploads/<space>/...
+// src/lib/api.js – Supabase‑only with all dashboard functions
+import { supabase } from './supabaseClient';
+import auth from './auth';
 
-/* -----------------------
-   Config / constants
-   ----------------------- */
-export const API_ORIGIN = (import.meta.env.VITE_API_ORIGIN || "https://sprada.onrender.com").replace(/\/$/, "");
-export const API_BASE = `${API_ORIGIN}/api`;
-export const UPLOAD_STRATEGY = (import.meta.env.VITE_UPLOAD_STRATEGY || "local").toLowerCase();
-// Serveable uploads base (used for building image URLs)
-export const UPLOADS_BASE = `${API_ORIGIN.replace(/\/$/, "")}/uploads`;
+export const API_ORIGIN = '';
+export const API_BASE = '';
+export const UPLOAD_STRATEGY = 's3';
 
-const SUPABASE_PROJECT_REF = "kwthxsumqqssiywdcevx";
-
-const SUPABASE_PUBLIC_BASE =
-  `https://${SUPABASE_PROJECT_REF}.supabase.co/storage/v1/object/public/sprada_storage`;
-
-
-/* -----------------------
-   Auth helpers
-   ----------------------- */
-function authHeaders() {
-  const token = localStorage.getItem("accessToken");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-async function tryParseJSON(response) {
-  // return parsed json if possible, otherwise raw text or null
-  if (!response) return null;
-  try {
-    const txt = await response.text();
-    try {
-      return txt ? JSON.parse(txt) : null;
-    } catch {
-      return txt || null;
-    }
-  } catch (err) {
-    return null;
-  }
-}
-
-/* -----------------------
-   Centralized logout helper
-   - Removes tokens/user from localStorage
-   - Dispatches a global "app:logout" event so UI can listen and react
-   ----------------------- */
-export function logout() {
-  try { localStorage.removeItem("accessToken"); } catch (_) {}
-  try { localStorage.removeItem("refreshToken"); } catch (_) {}
-  try { localStorage.removeItem("user"); } catch (_) {}
-
-  // Dispatch an event so UI / stores can react (redirect, show toast, clear redux)
-  try {
-    window.dispatchEvent(new CustomEvent("app:logout"));
-  } catch (_) {}
-}
-
-/* -----------------------
-   Token refresh helpers
-   ----------------------- */
-export async function attemptRefresh() {
-  const refreshToken = localStorage.getItem("refreshToken");
-  if (!refreshToken) return false;
-
-  try {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ refreshToken })
-    });
-
-    if (!res.ok) {
-      // remove local tokens if refresh endpoint explicitly failed
-      try { localStorage.removeItem("accessToken"); } catch (_) {}
-      try { localStorage.removeItem("refreshToken"); } catch (_) {}
-      try { localStorage.removeItem("user"); } catch (_) {}
-      return false;
-    }
-
-    const data = await tryParseJSON(res);
-    const accessToken = data?.accessToken || data?.access_token || data?.token || null;
-    const refresh = data?.refreshToken || data?.refresh_token || data?.refresh || null;
-    const user = data?.user || data?.userInfo || null;
-
-    if (accessToken) localStorage.setItem("accessToken", accessToken);
-    if (refresh) localStorage.setItem("refreshToken", refresh);
-    if (user) localStorage.setItem("user", JSON.stringify(user));
-
-    return !!accessToken;
-  } catch (err) {
-    console.warn("[api] refresh failed", err);
-    try { localStorage.removeItem("accessToken"); } catch (_) {}
-    try { localStorage.removeItem("refreshToken"); } catch (_) {}
-    try { localStorage.removeItem("user"); } catch (_) {}
-    return false;
-  }
-}
-
-/* -----------------------
-   Utility: make relative/partial urls absolute (improved)
-   - If url is already absolute, returned unchanged.
-   - If url starts with /uploads or /src/uploads, prefix with API_ORIGIN.
-   - If url is uploads/... or src/uploads/... or a bare filename, prefix with UPLOADS_BASE.
-   ----------------------- */
-export function toAbsoluteImageUrl(path) {
-  if (!path || typeof path !== "string") return null;
-
-  const trimmed = path.trim();
-  if (!trimmed) return null;
-
-  // Already a Supabase public URL
-  if (
-    trimmed.startsWith(
-      "https://kwthxsumqqssiywdcevx.supabase.co/storage/v1/object/public/sprada_storage"
-    )
-  ) {
-    return trimmed;
-  }
-
-  // Remove leading slashes
-  const cleanPath = trimmed.replace(/^\/+/, "");
-
-  /**
-   * Expected inputs:
-   *  - products/image.jpg
-   *  - blogs/post1/banner.png
-   *  - categories/rings.png
-   */
-  return `${SUPABASE_PUBLIC_BASE}/${cleanPath}`;
-}
-
-
-/* -----------------------
-   Core fetch wrapper (improved)
-   - Normalizes path slashes
-   - Supports optional timeoutMs in opts (non-breaking)
-   - Calls logout() when refresh fails and tokens removed
-   ----------------------- */
-async function apiFetch(path, opts = {}, { _retrying = false } = {}) {
-  // normalize path: allow absolute URL or relative paths with or without leading slash
-  let url;
-  if (/^https?:\/\//i.test(path)) {
-    url = path;
-  } else {
-    const p = path && typeof path === "string" ? (path.startsWith("/") ? path : `/${path}`) : "/";
-    url = `${API_BASE}${p}`;
-  }
-
-  // timeout helper (optional)
-  const timeoutMs = (opts && typeof opts.timeoutMs === "number") ? opts.timeoutMs : 0;
-  let controller;
-  let timeoutId;
-  if (timeoutMs > 0) {
-    controller = new AbortController();
-    // ensure we don't clobber existing signal if passed
-    if (!opts.signal) opts.signal = controller.signal;
-    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  }
-
-  try {
-    // Default headers; respect caller-provided opts.headers and always ensure auth header appended
-    // If opts.headers is a Headers instance we try to convert it to plain object for checks below
-    let incomingHeaders = opts.headers || {};
-    if (incomingHeaders instanceof Headers) {
-      const obj = {};
-      for (const [k, v] of incomingHeaders.entries()) obj[k] = v;
-      incomingHeaders = obj;
-    }
-
-    const headers = { "Content-Type": "application/json", ...(incomingHeaders || {}), ...authHeaders() };
-
-    // If caller explicitly provided multipart marker, remove Content-Type so browser sets boundary
-    const callerCT = (incomingHeaders && (incomingHeaders['Content-Type'] || incomingHeaders['content-type']));
-    if (callerCT && /multipart\/form-data/i.test(String(callerCT))) {
-      delete headers['Content-Type'];
-      delete headers['content-type'];
-    }
-
-    const res = await fetch(url, {
-      ...opts,
-      headers,
-      credentials: "include"
-    });
-
-    if (timeoutId) clearTimeout(timeoutId);
-
-    if (res.status === 204) return null;
-    const data = await tryParseJSON(res);
-
-    if (!res.ok) {
-      // 401 -> try token refresh once
-      if (res.status === 401 && !_retrying) {
-        const refreshed = await attemptRefresh();
-        if (refreshed) return apiFetch(path, opts, { _retrying: true });
-        // Token refresh failed: clear tokens + notify app
-        logout();
-        const err = new Error("unauthorized");
-        err.status = 401;
-        err.data = data;
-        throw err;
-      }
-
-      const err = new Error((data && (data.error || data.message)) || res.statusText || "API error");
-      err.status = res.status;
-      err.data = data;
-      throw err;
-    }
-
-    return data;
-  } catch (err) {
-    if (err?.name === "AbortError") {
-      const abortErr = new Error("request_timeout");
-      abortErr.status = 0;
-      throw abortErr;
-    }
-
-    // More helpful logs for debugging; avoid noisy logs for expected 4xx handled upstream
-    if (!err || !err.status || err.status >= 500) {
-      console.error("[apiFetch] ERROR", url, err);
-    } else {
-      console.debug("[apiFetch] handled", url, err && err.status ? `status=${err.status}` : err);
-    }
-    throw err;
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
-}
-
-/* Basic helpers */
-export async function apiGet(path, opts = {}) { return apiFetch(path, { method: "GET", ...opts }); }
-export async function apiPost(path, body, opts = {}) {
-  const isForm = body instanceof FormData;
-  const bodyStr = isForm ? body : JSON.stringify(body);
-  const headers = isForm ? (opts.headers || {}) : { "Content-Type": "application/json", ...(opts.headers || {}) };
-  return apiFetch(path, { method: "POST", body: bodyStr, headers, ...opts });
-}
-export async function apiPut(path, body, opts = {}) {
-  const isForm = body instanceof FormData;
-  const bodyStr = isForm ? body : JSON.stringify(body);
-  const headers = isForm ? (opts.headers || {}) : { "Content-Type": "application/json", ...(opts.headers || {}) };
-  return apiFetch(path, { method: "PUT", body: bodyStr, headers, ...opts });
-}
-export async function apiDelete(path, opts = {}) { return apiFetch(path, { method: "DELETE", ...opts }); }
-
-/* -----------------------
-   Auth
-   ----------------------- */
+// -------------------------------------------------------------
+// 2. Auth – using Supabase Auth
+// -------------------------------------------------------------
 export async function login(email, password) {
-  const data = await apiFetch("/auth/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password })
-  }).catch(err => { throw err; });
-
-  const accessToken = data?.accessToken || data?.access_token || data?.token || data?.access || null;
-  const refreshToken = data?.refreshToken || data?.refresh_token || data?.refresh || null;
-  const user = data?.user || data?.userInfo || data?.profile || null;
-
-  if (accessToken) localStorage.setItem("accessToken", accessToken);
-  if (refreshToken) localStorage.setItem("refreshToken", refreshToken);
-  if (user) localStorage.setItem("user", JSON.stringify(user));
-
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+  const { user, session } = data;
+  const accessToken = session?.access_token;
+  const refreshToken = session?.refresh_token;
+  await auth.loginWithTokens({ accessToken, refreshToken, user });
   return { accessToken, refreshToken, user, raw: data };
 }
 
-/* Metrics & lists */
-export const getVisitorSummary = () => apiGet("/metrics/visitors/summary");
-export const getReviewsStats = () => apiGet("/reviews/stats");
-export const getRecentReviews = () => apiGet("/reviews");
-export const getCategories = () => apiGet("/categories?include_counts=true");
-export const getHomeData = () => apiGet("/home");
-export const getVisitorsList = () => apiGet("/visitors/list");
-export const getPushList = () => apiGet("/push/list");
-export const getPushSubscriptions = () => getPushList();
-
-/* -------- Products helpers -------- */
-export async function getProducts(arg = 20) {
-  if (typeof arg === "number") return apiGet(`/products?limit=${arg}`);
-  const opts = arg || {};
-  const qs = new URLSearchParams();
-  if (opts.page) qs.set("page", String(opts.page));
-  if (opts.limit) qs.set("limit", String(opts.limit));
-  if (opts.q) qs.set("q", opts.q);
-  if (opts.category_id) qs.set("category_id", opts.category_id);
-  if (opts.category_slug) qs.set("category_slug", opts.category_slug);
-  if (opts.order) qs.set("order", opts.order);
-  if (opts.trade_type) qs.set("trade_type", opts.trade_type);
-  return apiGet(`/products?${qs.toString()}`);
+export async function logout() {
+  await supabase.auth.signOut();
+  await auth.logout();
 }
-export const getRecentProducts = (limit = 8) => getProducts(limit);
 
-/* -------- Blogs helpers -------- */
-/* -------- Blogs helpers (defensive) -------- */
-// Original (simple): export const getBlogs = (limit = 10) => apiGet(`/blogs?limit=${limit}`);
-// Replace with defensive version that logs raw response data on failure
-export async function getBlogs(limit = 10) {
-  const path = `/blogs?limit=${encodeURIComponent(limit)}`;
-  try {
-    const data = await apiGet(path);
-    // Normalize shapes: return array when the endpoint returns { blogs: [...] } or array directly
-    if (!data) return [];
-    if (Array.isArray(data)) return data;
-    if (data.blogs && Array.isArray(data.blogs)) return data.blogs;
-    // maybe server returns { ok: true, data: { blogs: [...] } }
-    if (data.data && Array.isArray(data.data.blogs)) return data.data.blogs;
-    // Single object -> wrap
-    if (data.id || data.title) return [data];
-    // fallback: return empty and log
-    console.warn("[api.getBlogs] unexpected response shape:", data);
-    return [];
-  } catch (err) {
-    // err.data may contain raw text (HTML error page) — log it for debugging
-    console.error("[api.getBlogs] failed to fetch blogs:", err);
-    if (err && err.data) {
-      console.debug("[api.getBlogs] raw response data:", err.data);
-    }
-    // return empty list so UI degrades gracefully
-    return [];
+export async function attemptRefresh() {
+  const { data, error } = await supabase.auth.refreshSession();
+  if (error) return false;
+  const session = data.session;
+  if (session) {
+    await auth.loginWithTokens({
+      accessToken: session.access_token,
+      refreshToken: session.refresh_token,
+      user: session.user,
+    });
+    return true;
   }
+  return false;
 }
 
+export async function getUser() {
+  const { data, error } = await supabase.auth.getUser();
+  if (error) throw error;
+  return data.user;
+}
+
+export async function getAccessToken() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  return data.session?.access_token || null;
+}
+
+// -------------------------------------------------------------
+// 3. Generic query helper
+// -------------------------------------------------------------
+async function supabaseQuery(table, select = '*', filters = {}, options = {}) {
+  let query = supabase.from(table).select(select);
+  Object.entries(filters).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      query = query.in(key, value);
+    } else if (typeof value === 'object' && value !== null) {
+      const { column, operator, value: val } = value;
+      query = query.filter(column, operator, val);
+    } else {
+      query = query.eq(key, value);
+    }
+  });
+  if (options.order) query = query.order(options.order.column, { ascending: options.order.ascending });
+  if (options.limit) query = query.limit(options.limit);
+  if (options.offset) query = query.range(options.offset, options.offset + (options.limit || 10) - 1);
+  const { data, error } = await query;
+  if (error) throw error;
+  return data;
+}
+
+// -------------------------------------------------------------
+// 4. All API functions
+// -------------------------------------------------------------
+
+// -------- Products --------
+export async function getProducts(arg = 20) {
+  let filters = {};
+  let options = { limit: 20 };
+  if (typeof arg === 'number') {
+    options.limit = arg;
+  } else if (typeof arg === 'object') {
+    if (arg.limit) options.limit = arg.limit;
+    if (arg.page) options.offset = (arg.page - 1) * (arg.limit || 20);
+    if (arg.category_id) filters.category_id = arg.category_id;
+    if (arg.category_slug) {
+      const { data: cat } = await supabase
+        .from('categories')
+        .select('id')
+        .eq('slug', arg.category_slug)
+        .single();
+      if (cat) filters.category_id = cat.id;
+      else return [];
+    }
+    if (arg.trade_type) filters.trade_type = arg.trade_type;
+    if (arg.q) {
+      const search = `%${arg.q}%`;
+      filters.title = { column: 'title', operator: 'ilike', value: search };
+    }
+    if (arg.order) {
+      // 🔧 Fix: parse both dot‑separated and space‑separated orders
+      let column, dir;
+      if (arg.order.includes(' ')) {
+        [column, dir] = arg.order.split(' ');
+      } else if (arg.order.includes('.')) {
+        [column, dir] = arg.order.split('.');
+      } else {
+        column = arg.order;
+        dir = 'asc';
+      }
+      options.order = { column, ascending: dir === 'asc' };
+    }
+  }
+
+  // Build the query with image join
+  let query = supabase
+    .from('products')
+    .select(`
+      *,
+      product_images ( id, url, is_primary )
+    `);
+
+  Object.entries(filters).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      query = query.in(key, value);
+    } else if (typeof value === 'object' && value !== null) {
+      const { column, operator, value: val } = value;
+      query = query.filter(column, operator, val);
+    } else {
+      query = query.eq(key, value);
+    }
+  });
+
+  if (options.order) {
+    query = query.order(options.order.column, { ascending: options.order.ascending });
+  }
+  if (options.limit) query = query.limit(options.limit);
+  if (options.offset) query = query.range(options.offset, options.offset + (options.limit || 10) - 1);
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  // Transform to add primary_image field
+  return (data || []).map(product => {
+    const primaryImg = product.product_images?.find(img => img.is_primary) || product.product_images?.[0];
+    return {
+      ...product,
+      primary_image: primaryImg?.url || null,
+    };
+  });
+}
+
+// ✅ Added missing functions
+export const getRecentProducts = (limit = 8) => getProducts({ limit });
+
+export async function getProductCount() {
+  const { count, error } = await supabase
+    .from('products')
+    .select('*', { count: 'exact', head: true });
+  if (error) throw error;
+  return count;
+}
+
+// -------- Categories --------
+export async function getCategories() {
+  const { data, error } = await supabase
+    .from('categories')
+    .select('*')
+    .order('sort_order', { ascending: true });
+  if (error) throw error;
+  return data;
+}
+
+// -------- Blogs --------
+export async function getBlogs(limit = 10) {
+  const { data, error } = await supabase
+    .from('blogs')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data;
+}
 export const getRecentBlogs = (limit = 6) => getBlogs(limit);
 
 export async function getBlogFlexible(blogId) {
-  if (!blogId) throw new Error("blogId required");
-  // Primary attempt: direct GET by id/slug
-  const attempts = [
-    `/blogs/${encodeURIComponent(blogId)}`,
-    `/blogs/slug/${encodeURIComponent(blogId)}`,
-    `/blogs/id/${encodeURIComponent(blogId)}`,
-    `/blogs?blogId=${encodeURIComponent(blogId)}`,
-    `/blogs?id=${encodeURIComponent(blogId)}`
-  ];
-
-  let lastErr = null;
-  for (const path of attempts) {
-    try {
-      const res = await apiGet(path);
-      if (!res) continue;
-      // server might return { ok: true, blog: {...} } or plain blog object
-      if (res.ok && res.blog) return res.blog;
-      if (res.blog) return res.blog;
-      if (res.id || res.title) return res;
-      if (res.data && (res.data.blog || res.data)) return res.data.blog || res.data;
-    } catch (err) {
-      lastErr = err;
-      if (err?.status === 404 || err?.message === "not_found") continue;
-      continue;
+  const { data, error } = await supabase
+    .from('blogs')
+    .select('*')
+    .or(`id.eq.${blogId},slug.eq.${blogId}`)
+    .single();
+  if (error) {
+    const { data: data2, error: error2 } = await supabase
+      .from('blogs')
+      .select('*')
+      .eq('id', blogId)
+      .single();
+    if (error2) {
+      const nf = new Error('not_found');
+      nf.status = 404;
+      throw nf;
     }
+    return data2;
   }
-  if (lastErr) throw lastErr;
-  const nf = new Error("not_found");
-  nf.status = 404;
-  throw nf;
-}
-
-/* Create blog (ADMIN) */
-export async function createBlog(payload) {
-  if (!payload || !payload.title || !payload.content) throw new Error('title and content required');
-  return apiPost('/blogs', payload);
-}
-
-/* Update blog (ADMIN) */
-export async function updateBlog(id, payload) {
-  if (!id) throw new Error('id required');
-  if (!payload || Object.keys(payload).length === 0) throw new Error('no update fields');
-  return apiPut(`/blogs/${encodeURIComponent(id)}`, payload);
-}
-
-/* Delete blog (ADMIN) */
-export async function deleteBlog(id) {
-  if (!id) throw new Error('id required');
-  return apiDelete(`/blogs/${encodeURIComponent(id)}`);
-}
-
-/* Publish / unpublish blog (ADMIN) */
-export async function publishBlog(id, { publish = true, published_at = null } = {}) {
-  if (!id) throw new Error('id required');
-  const payload = { publish };
-  if (published_at) payload.published_at = published_at;
-  return apiPost(`/blogs/${encodeURIComponent(id)}/publish`, payload);
-}
-
-/* Editor single file upload (ADMIN) - posts to /api/blogs/upload (multipart) */
-export async function uploadBlogEditorFile(file) {
-  if (!(file instanceof File)) throw new Error('file required');
-  const url = `${API_BASE}/blogs/upload`;
-  const fd = new FormData();
-  fd.append('file', file, file.name);
-
-  const res = await fetch(url, {
-    method: 'POST',
-    credentials: 'include',
-    body: fd,
-    headers: { ...authHeaders() } // do not set Content-Type manually
-  });
-
-  const data = await tryParseJSON(res);
-  if (!res.ok) {
-    const err = new Error(data?.error || res.statusText || 'upload_error');
-    err.status = res.status;
-    err.data = data;
-    throw err;
-  }
-
-  // server returns { ok: true, image: {...} } or { url: "/uploads/..." } or { filename: "..." }
-  let publicUrl = data?.data?.url || data?.url || data?.data?.publicUrl || data?.publicUrl || data?.path || data?.image?.url || data?.image?.publicUrl || data?.image?.path || null;
-
-  if (!publicUrl && data?.filename) publicUrl = `/uploads/blogs/${encodeURIComponent(data.filename)}`;
-
-  if (typeof publicUrl === 'string' && publicUrl.startsWith('/')) {
-    publicUrl = `${API_ORIGIN}${publicUrl}`;
-  } else if (typeof publicUrl === 'string' && !/^https?:\/\//i.test(publicUrl)) {
-    // bare relative path
-    publicUrl = `${API_ORIGIN}/${publicUrl.replace(/^\/+/, "")}`;
-  }
-
-  return publicUrl || data;
-}
-
-/* -----------------------
-   Upload helpers (space-aware)
-   ----------------------- */
-
-/**
- * presignUpload(fileName, fileType)
- * Only attempts presign when UPLOAD_STRATEGY === 's3'
- */
-export async function presignUpload(fileName, fileType) {
-  if (UPLOAD_STRATEGY === 's3') {
-    return apiPost("/uploads/presign", { fileName, fileType });
-  }
-  return null;
-}
-
-/**
- * uploadFileToLocalSpace(file, space = 'blogs')
- * Posts multipart FormData to /api/uploads/<space>
- * Returns normalized public URL string (or throws).
- */
-export async function uploadFileToLocalSpace(file, space = 'blogs') {
-  if (!(file instanceof File)) throw new Error('file required');
-  if (!space) space = 'blogs';
-  const url = `${API_BASE}/uploads/${encodeURIComponent(space)}`;
-  const fd = new FormData();
-  fd.append('file', file, file.name);
-
-  const res = await fetch(url, {
-    method: 'POST',
-    credentials: 'include',
-    body: fd,
-    headers: { ...authHeaders() } // do not set Content-Type manually for multipart
-  });
-
-  const data = await tryParseJSON(res);
-  if (!res.ok) {
-    const err = new Error(data?.error || res.statusText || 'upload_error');
-    err.status = res.status;
-    err.data = data;
-    throw err;
-  }
-
-  // Normalize response: prefer publicUrl/public_url/url then fallback to filename -> build url using space
-  let publicUrl = data?.publicUrl || data?.public_url || data?.url || data?.path || null;
-  if (publicUrl && typeof publicUrl === 'string') {
-    if (publicUrl.startsWith('/')) return `${API_ORIGIN}${publicUrl}`;
-    if (!/^https?:\/\//i.test(publicUrl)) return `${API_ORIGIN}/${publicUrl.replace(/^\/+/, "")}`;
-    return publicUrl;
-  }
-
-  if (data?.filename) {
-    // In development return relative path so Vite proxy handles it; in production use API_ORIGIN.
-    if (import.meta.env.MODE !== 'production') {
-      return `/uploads/${encodeURIComponent(space)}/${encodeURIComponent(data.filename)}`;
-    }
-    return `${API_ORIGIN}/uploads/${encodeURIComponent(space)}/${encodeURIComponent(data.filename)}`;
-  }
-
   return data;
 }
 
-/**
- * uploadFile(file, options)
- * - options.space: 'blogs' | 'products' (defaults to 'blogs')
- * Attempts S3 presign flow if configured, otherwise falls back to local space upload.
- */
-export async function uploadFile(file, { space = "blogs" } = {}) {
-  if (!(file instanceof File)) throw new Error("file required");
-
-  if (UPLOAD_STRATEGY === 's3' && window.supabase) {
-    const supabase = window.supabase;
-    const filePath = `${space}/${Date.now()}-${file.name}`;
-    const { error } = await supabase.storage
-      .from('sprada_storage')
-      .upload(filePath, file, { upsert: true });
-    if (error) throw error;
-    return filePath;
-  }
-
-  // Fallback to local server upload
-  console.warn('[uploadFile] Supabase not available; falling back to local upload');
-  return await uploadFileToLocalSpace(file, space);
+export async function createBlog(payload) {
+  const { data, error } = await supabase
+    .from('blogs')
+    .insert(payload)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+export async function updateBlog(id, payload) {
+  const { data, error } = await supabase
+    .from('blogs')
+    .update(payload)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+export async function deleteBlog(id) {
+  const { error } = await supabase.from('blogs').delete().eq('id', id);
+  if (error) throw error;
+  return { success: true };
+}
+export async function publishBlog(id, { publish = true, published_at = null } = {}) {
+  const payload = { is_published: publish };
+  if (published_at) payload.published_at = published_at;
+  return updateBlog(id, payload);
 }
 
+// -------- Blog images --------
+export async function uploadBlogEditorFile(file) {
+  const filePath = `blogs/${Date.now()}-${file.name}`;
+  const { error } = await supabase.storage.from('sprada_storage').upload(filePath, file);
+  if (error) throw error;
+  const { data } = supabase.storage.from('sprada_storage').getPublicUrl(filePath);
+  return data.publicUrl;
+}
+export async function attachBlogImage(blogId, url, caption = null) {
+  const { data, error } = await supabase
+    .from('blog_images')
+    .insert({ blog_id: blogId, url, caption })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+export async function uploadAndAttachBlogImage(file, blogId, caption = null) {
+  const url = await uploadBlogEditorFile(file);
+  const created = await attachBlogImage(blogId, url, caption);
+  return { uploadUrl: url, db: created };
+}
+export async function getBlogImages(blog_id) {
+  const { data, error } = await supabase
+    .from('blog_images')
+    .select('*')
+    .eq('blog_id', blog_id);
+  if (error) throw error;
+  return data;
+}
+export async function deleteBlogImage(id) {
+  const { error } = await supabase.from('blog_images').delete().eq('id', id);
+  if (error) throw error;
+  return { success: true };
+}
 
-/* -------- Product images gallery helpers -------- */
+// -------- Product images --------
 export async function createProductImage(productId, file, isPrimary = false) {
-  if (!productId) throw new Error('product_id required');
-  if (!(file instanceof File)) throw new Error('file required');
-
-  const formData = new FormData();
-  formData.append('product_id', productId);
-  formData.append('is_primary', String(isPrimary));
-  formData.append('file', file);
-
-  const url = `${API_BASE}/product-images`;
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { ...authHeaders() }, // ❌ DO NOT set Content-Type – browser will add boundary
-    credentials: 'include',
-    body: formData
-  });
-
-  const data = await tryParseJSON(res);
-  if (!res.ok) {
-    const err = new Error(data?.error || res.statusText || 'API error');
-    err.status = res.status;
-    err.data = data;
-    throw err;
-  }
+  const filePath = `products/${Date.now()}-${file.name}`;
+  const { error } = await supabase.storage.from('sprada_storage').upload(filePath, file);
+  if (error) throw error;
+  const { data: publicUrl } = supabase.storage.from('sprada_storage').getPublicUrl(filePath);
+  const { data, error: dbError } = await supabase
+    .from('product_images')
+    .insert({
+      product_id: productId,
+      url: publicUrl.publicUrl,
+      is_primary: isPrimary,
+      filename: file.name,
+    })
+    .select()
+    .single();
+  if (dbError) throw dbError;
   return data;
 }
 export async function getProductImages(product_id) {
-  if (!product_id) throw new Error('product_id required');
-  return apiGet(`/product-images?product_id=${encodeURIComponent(product_id)}`);
+  const { data, error } = await supabase
+    .from('product_images')
+    .select('*')
+    .eq('product_id', product_id);
+  if (error) throw error;
+  return data;
 }
-export async function deleteProductImage(id) { if (!id) throw new Error('id required'); return apiDelete(`/product-images/${encodeURIComponent(id)}`); }
+export async function deleteProductImage(id) {
+  const { error } = await supabase.from('product_images').delete().eq('id', id);
+  if (error) throw error;
+  return { success: true };
+}
 export async function patchProductImage(id, patchObj) {
-  if (!id) throw new Error('id required');
-  const url = `${API_BASE}/product-images/${encodeURIComponent(id)}`;
-  const res = await fetch(url, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    credentials: 'include',
-    body: JSON.stringify(patchObj)
-  });
-  const data = await tryParseJSON(res);
-  if (!res.ok) {
-    const err = new Error(data?.error || res.statusText || 'API error');
-    err.status = res.status;
-    err.data = data;
-    throw err;
-  }
+  const { data, error } = await supabase
+    .from('product_images')
+    .update(patchObj)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
   return data;
 }
 
-/* -------- Blog images helpers -------- */
-
-export async function attachBlogImage(blogId, url, caption = null) {
-  if (!blogId) throw new Error('blogId required');
-  if (!url) throw new Error('url required');
-
-  const payload = { blog_id: blogId, url, caption };
-  const res = await fetch(`${API_BASE}/blog-images`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    credentials: 'include',
-    body: JSON.stringify(payload)
-  });
-  const data = await tryParseJSON(res);
-  if (!res.ok) {
-    const err = new Error(data?.error || res.statusText || 'API error');
-    err.status = res.status;
-    err.data = data;
-    throw err;
+// -------- Reviews --------
+export async function getReviewsStats() {
+  const { count, error: countErr } = await supabase
+    .from('reviews')
+    .select('*', { count: 'exact', head: true });
+  if (countErr) throw countErr;
+  const { data: avgData, error: avgErr } = await supabase
+    .from('reviews')
+    .select('rating')
+    .not('rating', 'is', null);
+  if (avgErr) throw avgErr;
+  let avg = 0;
+  if (avgData && avgData.length > 0) {
+    const sum = avgData.reduce((acc, r) => acc + r.rating, 0);
+    avg = sum / avgData.length;
   }
+  return { total: count || 0, average: avg };
+}
+export async function getRecentReviews() {
+  const { data, error } = await supabase
+    .from('reviews')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(5);
+  if (error) throw error;
   return data;
 }
 
-export async function uploadAndAttachBlogImage(file, blogId, caption = null) {
-  if (!(file instanceof File)) throw new Error('file required');
-  if (!blogId) throw new Error('blogId required');
-
-  // 1) upload to 'blogs' space
-  const publicUrl = await uploadFile(file, { space: 'blogs' });
-
-  // 2) attach record
-  const created = await attachBlogImage(blogId, publicUrl, caption);
-  return { uploadUrl: publicUrl, db: created };
-}
-
-export async function getBlogImages(blog_id) {
-  if (!blog_id) throw new Error('blog_id required');
-  return apiGet(`/blog-images?blog_id=${encodeURIComponent(blog_id)}`);
-}
-export async function deleteBlogImage(id) { if (!id) throw new Error('id required'); return apiDelete(`/blog-images/${encodeURIComponent(id)}`); }
-
-/* -------- Blog comments -------- */
-
-export async function postComment(blogId, payload = {}) {
-  if (!blogId) throw new Error('blogId required');
-  if (!payload || !payload.body) throw new Error('body required');
-  const res = await fetch(`${API_BASE}/blogs/${encodeURIComponent(blogId)}/comments`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    credentials: 'include',
-    body: JSON.stringify(payload)
-  });
-  const data = await tryParseJSON(res);
-  if (!res.ok) {
-    const err = new Error(data?.error || res.statusText || 'API error');
-    err.status = res.status;
-    err.data = data;
-    throw err;
-  }
+// -------- Leads --------
+export async function getLeads(limit = 10) {
+  const { data, error } = await supabase
+    .from('leads')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
   return data;
 }
-
-export async function getComments(blogId, { all = false } = {}) {
-  if (!blogId) throw new Error('blogId required');
-  const url = `/blogs/${encodeURIComponent(blogId)}/comments${all ? '?all=true' : ''}`;
-  return apiGet(url);
-}
-
-export async function updateComment(commentId, payload = {}) {
-  if (!commentId) throw new Error('commentId required');
-  if (!payload || Object.keys(payload).length === 0) throw new Error('no update fields');
-  return apiPut(`/blogs/comments/${encodeURIComponent(commentId)}`, payload);
-}
-
-export async function deleteComment(commentId) {
-  if (!commentId) throw new Error('commentId required');
-  return apiDelete(`/blogs/comments/${encodeURIComponent(commentId)}`);
-}
-
-/* -------- Blog likes -------- */
-
-export async function toggleLike(blogId, { user_id = undefined } = {}) {
-  if (!blogId) throw new Error('blogId required');
-  const payload = {};
-  if (user_id) payload.user_id = user_id;
-  return apiPost(`/blogs/${encodeURIComponent(blogId)}/like`, payload);
-}
-
-export async function getLikesCount(blogId) {
-  if (!blogId) throw new Error('blogId required');
-  return apiGet(`/blogs/${encodeURIComponent(blogId)}/count`);
-}
-
-/* -------- Robust wrapper for visitor sessions used by some components -------- */
-export async function getVisitorSessions() {
-  try {
-    return await getVisitorsList();
-  } catch (err) {
-    if (err?.status === 404) {
-      console.warn("[API] visitors/list not found — returning empty array as fallback");
-      return [];
-    }
-    throw err;
-  }
-}
-// add somewhere near the other leads helpers (e.g. after getLeads/getLeadById)
 export async function getLeadsStats() {
-  // Returns aggregated statistics for dashboard metric card:
-  // { total, today, week, month, conversion_rate, ... }
-  return apiGet("/leads-stats/stats");
+  const today = new Date().toISOString().split('T')[0];
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const { count: total, error: totalErr } = await supabase
+    .from('leads')
+    .select('*', { count: 'exact', head: true });
+  if (totalErr) throw totalErr;
+  const { count: todayCount } = await supabase
+    .from('leads')
+    .select('*', { count: 'exact', head: true })
+    .gte('created_at', today);
+  const { count: weekCount } = await supabase
+    .from('leads')
+    .select('*', { count: 'exact', head: true })
+    .gte('created_at', weekAgo);
+  const { count: monthCount } = await supabase
+    .from('leads')
+    .select('*', { count: 'exact', head: true })
+    .gte('created_at', monthAgo);
+  return {
+    total: total || 0,
+    today: todayCount || 0,
+    week: weekCount || 0,
+    month: monthCount || 0,
+  };
 }
 
-/* Default export convenience object */
+// -------- Visitors --------
+export async function getVisitorSummary() {
+  const today = new Date().toISOString().split('T')[0];
+  const { count: total, error: totalErr } = await supabase
+    .from('visitors')
+    .select('*', { count: 'exact', head: true });
+  if (totalErr) throw totalErr;
+  const { count: todayCount, error: todayErr } = await supabase
+    .from('visitors')
+    .select('*', { count: 'exact', head: true })
+    .gte('last_seen', today);
+  if (todayErr) throw todayErr;
+  return { total: total || 0, today: todayCount || 0 };
+}
+export async function getVisitorsList() {
+  const { data, error } = await supabase
+    .from('visitors')
+    .select('*')
+    .order('last_seen', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return data;
+}
+export const getVisitorSessions = getVisitorsList;
+
+// -------- Push Subscriptions --------
+export async function getPushList() {
+  const { data, error } = await supabase
+    .from('push_subscriptions')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return data;
+}
+export const getPushSubscriptions = getPushList;
+
+// -------- Home data --------
+export async function getHomeData() {
+  const [products, blogs, categories] = await Promise.all([
+    getProducts({ limit: 6 }),
+    getBlogs(3),
+    getCategories(),
+  ]);
+  return { products, blogs, categories };
+}
+
+// -------- Image helper --------
+export function toAbsoluteImageUrl(path) {
+  if (!path) return null;
+  if (path.includes('/storage/v1/object/public/sprada_storage')) return path;
+  if (path.startsWith('data:')) return path;
+
+  let cleanPath = path;
+  if (/^https?:\/\//i.test(cleanPath)) {
+    const parts = cleanPath.split('/uploads/');
+    if (parts.length > 1) {
+      cleanPath = parts.slice(1).join('/uploads/');
+    } else {
+      return null;
+    }
+  } else {
+    cleanPath = cleanPath.replace(/^\/+/, '');
+    if (cleanPath.startsWith('uploads/')) {
+      cleanPath = cleanPath.substring('uploads/'.length);
+    }
+  }
+
+  const { data } = supabase.storage.from('sprada_storage').getPublicUrl(cleanPath);
+  return data.publicUrl;
+}
+
+// -------- Upload --------
+export async function uploadFile(file, { space = "blogs" } = {}) {
+  const filePath = `${space}/${Date.now()}-${file.name}`;
+  const { error } = await supabase.storage.from('sprada_storage').upload(filePath, file);
+  if (error) throw error;
+  return filePath;
+}
+export const presignUpload = () => null;
+export const uploadFileToLocalSpace = () => { throw new Error('Use uploadFile with Supabase'); };
+
+// -------- Blog comments --------
+export async function postComment(blogId, payload) {
+  const { data, error } = await supabase
+    .from('blog_comments')
+    .insert({ blog_id: blogId, ...payload })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+export async function getComments(blogId, { all = false } = {}) {
+  let query = supabase.from('blog_comments').select('*').eq('blog_id', blogId);
+  if (!all) query = query.eq('is_approved', true);
+  const { data, error } = await query.order('created_at', { ascending: false });
+  if (error) throw error;
+  return data;
+}
+export async function updateComment(commentId, payload) {
+  const { data, error } = await supabase
+    .from('blog_comments')
+    .update(payload)
+    .eq('id', commentId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+export async function deleteComment(commentId) {
+  const { error } = await supabase.from('blog_comments').delete().eq('id', commentId);
+  if (error) throw error;
+  return { success: true };
+}
+
+// -------- Blog likes --------
+export async function toggleLike(blogId, { user_id } = {}) {
+  const { data: existing } = await supabase
+    .from('blog_likes')
+    .select('*')
+    .eq('blog_id', blogId)
+    .eq('user_id', user_id)
+    .maybeSingle();
+  if (existing) {
+    const { error } = await supabase.from('blog_likes').delete().eq('blog_id', blogId).eq('user_id', user_id);
+    if (error) throw error;
+    return { liked: false };
+  } else {
+    const { error } = await supabase.from('blog_likes').insert({ blog_id: blogId, user_id });
+    if (error) throw error;
+    return { liked: true };
+  }
+}
+export async function getLikesCount(blogId) {
+  const { count, error } = await supabase
+    .from('blog_likes')
+    .select('*', { count: 'exact', head: true })
+    .eq('blog_id', blogId);
+  if (error) throw error;
+  return { count };
+}
+
+// -------- Leads (extended) --------
+export async function getLeadById(id) {
+  const { data, error } = await supabase
+    .from('leads')
+    .select('*')
+    .eq('id', id)
+    .single();
+  if (error) throw error;
+  return data;
+}
+export async function getLeadNotes(leadId) {
+  const { data, error } = await supabase
+    .from('lead_notes')
+    .select('*')
+    .eq('lead_id', leadId)
+    .order('created_at', { ascending: false });
+  if (error) {
+    console.warn('lead_notes table not found or error, returning empty notes', error);
+    return [];
+  }
+  return data;
+}
+export async function addLeadNote(leadId, { note }) {
+  const { data: userData } = await supabase.auth.getUser();
+  const author = userData?.user?.email || 'admin';
+  const { data, error } = await supabase
+    .from('lead_notes')
+    .insert({
+      lead_id: leadId,
+      note: note,
+      author,
+      created_at: new Date().toISOString(),
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+export async function updateLead(id, payload) {
+  const { data, error } = await supabase
+    .from('leads')
+    .update(payload)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// -------- Compatibility stubs --------
+export function apiGet() {
+  throw new Error('apiGet is not supported in Supabase mode. Please use the specific functions like getProducts(), getBlogs(), etc.');
+}
+export function apiPost() {
+  throw new Error('apiPost is not supported. Use specific functions like createBlog(), postComment(), etc.');
+}
+export function apiPut() {
+  throw new Error('apiPut is not supported. Use specific functions like updateBlog(), updateComment(), etc.');
+}
+export function apiDelete() {
+  throw new Error('apiDelete is not supported. Use specific functions like deleteBlog(), deleteComment(), etc.');
+}
+
+// -------------------------------------------------------------
+// 5. Default export
+// -------------------------------------------------------------
 export default {
-  API_ORIGIN, API_BASE, UPLOADS_BASE, UPLOAD_STRATEGY,
-  apiGet, apiPost, apiPut, apiDelete, login,
-  getVisitorSummary, getReviewsStats, getRecentReviews,
-  getCategories, getProducts, getBlogs, getHomeData,
-  getVisitorsList, getPushList, getPushSubscriptions,
-  getRecentProducts, getRecentBlogs, getVisitorSessions,
-  presignUpload, uploadFileToLocalSpace, uploadFile,
-  createProductImage, getProductImages, deleteProductImage, patchProductImage,
-  attachBlogImage, uploadAndAttachBlogImage, getBlogImages, deleteBlogImage,
-  createBlog, updateBlog, deleteBlog, publishBlog, uploadBlogEditorFile,
-  postComment, getComments, updateComment, deleteComment,
-  toggleLike, getLikesCount, toAbsoluteImageUrl, getBlogFlexible,
-  attemptRefresh, logout
+  login,
+  logout,
+  attemptRefresh,
+  getUser,
+  getAccessToken,
+  getProducts,
+  getRecentProducts,
+  getProductCount,
+  getCategories,
+  getBlogs,
+  getRecentBlogs,
+  getBlogFlexible,
+  createBlog,
+  updateBlog,
+  deleteBlog,
+  publishBlog,
+  uploadBlogEditorFile,
+  attachBlogImage,
+  uploadAndAttachBlogImage,
+  getBlogImages,
+  deleteBlogImage,
+  createProductImage,
+  getProductImages,
+  deleteProductImage,
+  patchProductImage,
+  getReviewsStats,
+  getRecentReviews,
+  getVisitorSummary,
+  getVisitorsList,
+  getVisitorSessions,
+  getPushList,
+  getPushSubscriptions,
+  getHomeData,
+  getLeads,
+  getLeadsStats,
+  toAbsoluteImageUrl,
+  uploadFile,
+  presignUpload,
+  uploadFileToLocalSpace,
+  postComment,
+  getComments,
+  updateComment,
+  deleteComment,
+  toggleLike,
+  getLikesCount,
+  getLeadById,
+  getLeadNotes,
+  addLeadNote,
+  updateLead,
+  apiGet,
+  apiPost,
+  apiPut,
+  apiDelete,
 };
+
+// ✅ Expose the Supabase client for direct queries
+export { supabase };

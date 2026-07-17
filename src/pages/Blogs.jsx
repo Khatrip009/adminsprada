@@ -20,15 +20,26 @@ import remarkGfm from "remark-gfm";
 import DOMPurify from "dompurify";
 import dayjs from "dayjs";
 
+// ✅ NEW IMPORTS – Supabase functions
 import {
-  apiGet,
-  apiPost,
-  apiPut,
-  apiDelete,
+  getBlogs,
+  createBlog,
+  updateBlog,
+  deleteBlog,
+  publishBlog,
   uploadFile,
   toAbsoluteImageUrl,
-  API_ORIGIN
+  supabase,
+  getComments,
+  getLikesCount,
+  toggleLike,
+  getBlogImages,
+  attachBlogImage,
+  deleteBlogImage,
 } from "../lib/api";
+
+// ✅ Also import auth if needed for preview check
+import auth from "../lib/auth";
 
 /* ---------------------------
    Utility & helper functions
@@ -103,14 +114,9 @@ function isLocalFilesystemPath(value) {
 }
 function safeAbsoluteImageUrl(raw) {
   if (!raw || typeof raw !== "string") return null;
-
   const val = raw.trim();
   if (!val) return null;
-
-  // allow data URLs (editor previews)
   if (/^data:/i.test(val)) return val;
-
-  // block local filesystem paths completely
   if (
     val.startsWith("/mnt/") ||
     val.startsWith("file://") ||
@@ -118,19 +124,14 @@ function safeAbsoluteImageUrl(raw) {
   ) {
     return null;
   }
-
-  // Absolute HTTP(S) → allow ONLY Supabase
   if (/^https?:\/\//i.test(val)) {
     if (val.includes(".supabase.co/storage/v1/object/public/sprada_storage")) {
       return val;
     }
-    return null; // ❌ reject non-supabase URLs
+    return null;
   }
-
-  // Relative path → assume Supabase bucket
   return toAbsoluteImageUrl(val);
 }
-
 
 /* Small modal confirm */
 function ConfirmModal({ open, title, message, onCancel, onConfirm, confirmLabel = "Confirm" }) {
@@ -290,30 +291,28 @@ function PreviewModal({ open, blogRef, onClose }) {
         if (!blogRef) throw new Error("missing blog");
         const idOrSlug = blogRef.slug || blogRef.id;
         if (!idOrSlug) throw new Error("missing id/slug");
-        const path = `/blogs/${encodeURIComponent(idOrSlug)}?preview=true`;
-        const res = await apiGet(path);
-        const candidate = res?.blog || res?.data || res;
-        if (!mounted) return;
 
-        if (!candidate || (!candidate.content && !candidate.title)) {
-          try {
-            const r2 = await apiGet(`/blogs/slug/${encodeURIComponent(idOrSlug)}?preview=true`);
-            const c2 = r2?.blog || r2?.data || r2;
-            if (c2 && (c2.content || c2.title)) { setBlog(c2); setLoading(false); return; }
-          } catch (_) {}
-          setError("Preview not available");
-          setLoading(false);
-          return;
+        // ✅ Use Supabase to fetch by slug or id
+        let query = supabase.from("blogs").select("*").or(`slug.eq.${idOrSlug},id.eq.${idOrSlug}`);
+        // For preview, allow unpublished if user is authenticated (check via auth)
+        const user = await auth.getUser().catch(() => null);
+        if (!user) {
+          query = query.eq("is_published", true);
         }
+        const { data, error } = await query.maybeSingle();
 
-        setBlog(candidate);
+        if (error) {
+          setError("Not found");
+        } else if (data) {
+          setBlog(data);
+        } else {
+          setError("Not found");
+        }
         setLoading(false);
       } catch (err) {
         console.error("Preview fetch error", err);
         if (!mounted) return;
-        if (err?.status === 401) setError("Preview requires sign-in (session expired)");
-        else if (err?.status === 404) setError("Post not found");
-        else setError("Failed to load preview");
+        setError("Failed to load preview");
         setLoading(false);
       }
     })();
@@ -404,12 +403,10 @@ export default function BlogsPage() {
 
   return (
     <div className="min-h-screen flex bg-gray-50 sprada-ui">
-      {/* Sidebar for large screens */}
       <div className="hidden lg:block w-72">
         <Sidebar user={user} className="w-72" />
       </div>
 
-      {/* Mobile sidebar drawer */}
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
           <div className="absolute inset-0 bg-black/40" onClick={() => setSidebarOpen(false)} />
@@ -465,7 +462,6 @@ function BlogsAdmin() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState(null);
 
-  // preview modal state
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewBlogRef, setPreviewBlogRef] = useState(null);
 
@@ -481,16 +477,30 @@ function BlogsAdmin() {
     navigate("/login", { replace: true });
   };
 
+  // ✅ Load blogs using Supabase (with search and pagination)
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await apiGet(`/blogs?page=${page}&limit=${limit}&q=${encodeURIComponent(q)}`);
-      const arr = (res && (res.blogs || res)) || [];
-      const normalized = (Array.isArray(arr) ? arr : []).map(b => ({
+      let query = supabase
+        .from("blogs")
+        .select("*", { count: "exact" })
+        .order("created_at", { ascending: false })
+        .range((page - 1) * limit, page * limit - 1);
+
+      if (q) {
+        // search in title and excerpt
+        query = query.or(`title.ilike.%${q}%,excerpt.ilike.%${q}%`);
+      }
+
+      const { data, error, count } = await query;
+      if (error) throw error;
+
+      const normalized = (data || []).map(b => ({
         ...b,
-        image: normalizeUploadUrl(b.image || b.og_image || b.thumbnail || "")
+        image: normalizeUploadUrl(b.og_image || b.image || b.thumbnail || "")
       }));
       setBlogs(normalized);
+      // Optionally store total count for pagination; we'll just keep it simple.
     } catch (e) {
       console.error(e);
       if (e?.status === 401) return handleUnauthorized();
@@ -536,7 +546,7 @@ function BlogsAdmin() {
       message: `Delete "${blog.title}"? This action is permanent.`,
       onConfirm: async () => {
         try {
-          await apiDelete(`/blogs/${encodeURIComponent(blog.id)}`);
+          await deleteBlog(blog.id);
           setBlogs(prev => prev.filter(x => x.id !== blog.id));
           toast.success("Deleted");
         } catch (e) {
@@ -552,8 +562,8 @@ function BlogsAdmin() {
 
   async function togglePublish(blog) {
     try {
-      const publish = !blog.published_at;
-      await apiPost(`/blogs/${encodeURIComponent(blog.id)}/publish`, { publish });
+      const publish = !blog.is_published;
+      await publishBlog(blog.id, { publish });
       toast.success(publish ? "Published" : "Unpublished");
       load();
     } catch (e) {
@@ -613,7 +623,7 @@ function BlogsAdmin() {
                     <button onClick={() => openDetail(b)} className="px-3 py-1 text-xs border rounded">Details</button>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => togglePublish(b)} className="px-3 py-1 text-xs border rounded">{b.published_at ? "Unpublish" : "Publish"}</button>
+                    <button onClick={() => togglePublish(b)} className="px-3 py-1 text-xs border rounded">{b.is_published ? "Unpublish" : "Publish"}</button>
                     <button onClick={() => handleDelete(b)} className="px-3 py-1 text-xs border rounded text-red-600">Delete</button>
                   </div>
                 </div>
@@ -672,10 +682,8 @@ function BlogEditor({ blog, onClose, onSaved }) {
     (async () => {
       if (blog && blog.id) {
         try {
-          let r = null;
-          try { r = await apiGet(`/blog-images?blogId=${encodeURIComponent(blog.id)}`); } catch (err) { try { r = await apiGet(`/blog-images?blog_id=${encodeURIComponent(blog.id)}`); } catch (_) { r = null; } }
-          const arr = (r && (r.images || r)) || [];
-          const mapped = arr.map(it => ({ id: it.id, url: normalizeUploadUrl(it.url || it.public_url || it.path || it.address || "") }));
+          const images = await getBlogImages(blog.id);
+          const mapped = images.map(it => ({ id: it.id, url: normalizeUploadUrl(it.url || it.public_url || it.path || it.address || "") }));
           setUploadedImages(mapped);
         } catch (e) { setUploadedImages([]); }
       } else setUploadedImages([]);
@@ -732,15 +740,19 @@ function BlogEditor({ blog, onClose, onSaved }) {
     if (!file) return;
     try {
       const tId = toast.loading("Uploading image...");
-      const raw = await uploadFile(file, { space: 'blogs' });
-      const url = normalizeUploadUrl(raw || "");
+      const filePath = await uploadFile(file, { space: 'blogs' });
+      const publicUrl = toAbsoluteImageUrl(filePath);
+      const url = normalizeUploadUrl(publicUrl);
       insertImageToEditor(url);
+
+      // Attach to blog if it has an id
       let saved = null;
-      try {
-        const payload = { blog_id: form.id || null, url, caption: "" };
-        const r = await apiPost("/blog-images", payload);
-        if (r && (r.id || r.url)) saved = { id: r.id || null, url: normalizeUploadUrl(r.url || r.public_url || url) };
-      } catch (e) { /* ignore */ }
+      if (form.id) {
+        try {
+          const r = await attachBlogImage(form.id, url, "");
+          saved = { id: r.id, url: normalizeUploadUrl(r.url) };
+        } catch (e) { /* ignore */ }
+      }
       setUploadedImages(prev => {
         const entry = saved ? { id: saved.id, url: saved.url } : { url };
         if (prev.some(p => p.url === entry.url)) return prev;
@@ -781,14 +793,16 @@ function BlogEditor({ blog, onClose, onSaved }) {
         is_published: !!form.is_published
       };
 
-      const safePayload = { ...payload };
-      if (safePayload.og_image !== undefined) safePayload.og_image = safeAbsoluteImageUrl(safePayload.og_image, "blogs");
+      // Ensure og_image is absolute
+      if (payload.og_image) {
+        payload.og_image = safeAbsoluteImageUrl(payload.og_image) || payload.og_image;
+      }
 
       if (form.id) {
-        await apiPut(`/blogs/${encodeURIComponent(form.id)}`, safePayload);
+        await updateBlog(form.id, payload);
         toast.success("Saved");
       } else {
-        await apiPost("/blogs", safePayload);
+        await createBlog(payload);
         toast.success("Created");
       }
       onSaved && onSaved();
@@ -895,8 +909,11 @@ function BlogEditor({ blog, onClose, onSaved }) {
                       <button onClick={async () => {
                         if (!img.id) { setUploadedImages(prev => prev.filter(x => x.url !== img.url)); toast.success("Removed"); return; }
                         if (!window.confirm("Delete this uploaded image?")) return;
-                        try { await apiDelete(`/blog-images/${encodeURIComponent(img.id)}`); setUploadedImages(prev => prev.filter(x => x.id !== img.id)); toast.success("Deleted"); }
-                        catch (e) { console.error(e); toast.error("Delete failed"); }
+                        try {
+                          await deleteBlogImage(img.id);
+                          setUploadedImages(prev => prev.filter(x => x.id !== img.id));
+                          toast.success("Deleted");
+                        } catch (e) { console.error(e); toast.error("Delete failed"); }
                       }} className="px-2 py-1 border rounded text-xs text-red-600">Delete</button>
                     </div>
                   </div>
@@ -944,12 +961,18 @@ function BlogDetail({ blog, onClose, onChange }) {
 
   useEffect(() => {
     (async () => {
+      // Load full detail from Supabase
       try {
-        const res = await apiGet(`/blogs/${encodeURIComponent(blog.slug)}`);
-        const payload = res?.blog || (res?.ok ? res.blog : null);
-        if (payload) {
-          setDetail(payload);
-          setImages((payload.images || []).map(i => ({ ...i, url: normalizeUploadUrl(i.url || i.public_url || i.path || "") })));
+        const { data, error } = await supabase
+          .from("blogs")
+          .select("*")
+          .eq("id", blog.id)
+          .single();
+        if (data) {
+          setDetail(data);
+          // Load images
+          const imgs = await getBlogImages(blog.id);
+          setImages(imgs.map(i => ({ ...i, url: normalizeUploadUrl(i.url || i.public_url || i.path || "") })));
         }
       } catch (e) { /* ignore */ }
       await loadComments();
@@ -960,8 +983,8 @@ function BlogDetail({ blog, onClose, onChange }) {
 
   async function loadComments() {
     try {
-      const r = await apiGet(`/blogs/${encodeURIComponent(blog.id)}/comments`);
-      setComments((r && r.comments) || []);
+      const data = await getComments(blog.id, { all: true });
+      setComments(data || []);
     } catch (e) {
       console.warn(e);
       if (e?.status === 401) {
@@ -974,8 +997,8 @@ function BlogDetail({ blog, onClose, onChange }) {
 
   async function loadLikes() {
     try {
-      const r = await apiGet(`/blogs/${encodeURIComponent(blog.id)}/likes`);
-      setLikes(r || { likes_count: 0, user_liked: false });
+      const data = await getLikesCount(blog.id);
+      setLikes({ likes_count: data.count || 0, user_liked: false });
     } catch (e) {
       console.warn(e);
       if (e?.status === 401) {
@@ -990,7 +1013,7 @@ function BlogDetail({ blog, onClose, onChange }) {
     if (!window.confirm("Approve comment?")) return;
     try {
       setBusy(true);
-      await apiPost(`/blogs/${encodeURIComponent(blog.id)}/comments/${encodeURIComponent(comment.id)}/approve`, {});
+      await updateComment(comment.id, { is_approved: true });
       await loadComments();
       toast.success("Comment approved");
     } catch (e) {
@@ -1007,7 +1030,7 @@ function BlogDetail({ blog, onClose, onChange }) {
     if (!window.confirm("Delete comment?")) return;
     try {
       setBusy(true);
-      await apiDelete(`/blogs/${encodeURIComponent(blog.id)}/comments/${encodeURIComponent(comment.id)}`);
+      await deleteComment(comment.id);
       await loadComments();
       toast.success("Deleted");
     } catch (e) {
@@ -1022,7 +1045,7 @@ function BlogDetail({ blog, onClose, onChange }) {
 
   async function toggleLike() {
     try {
-      await apiPost(`/blogs/${encodeURIComponent(blog.id)}/like`, {});
+      await toggleLike(blog.id, {});
       await loadLikes();
     } catch (e) {
       console.warn(e);
@@ -1134,7 +1157,7 @@ function BlogDetail({ blog, onClose, onChange }) {
                             <div className="text-xs text-slate-500">{new Date(c.created_at).toLocaleString()}</div>
                           </div>
                           <div className="flex items-center gap-2">
-                            {!c.is_published && (
+                            {!c.is_approved && (
                               <button onClick={() => approveComment(c)} className="px-2 py-1 border rounded text-xs bg-green-50">Approve</button>
                             )}
                             <button onClick={() => deleteComment(c)} className="px-2 py-1 border rounded text-xs text-red-600">Delete</button>
@@ -1192,5 +1215,5 @@ function downloadBlog(blog) {
 function shareBlog(blog) {
   const url = blog.canonical_url || (blog.slug ? `${window.location.origin}/blog/${blog.slug}` : null);
   if (url) window.open(url, "_blank");
-  else toast("No canonical/slug URL available");
+  else toast.error("No canonical/slug URL available");
 }

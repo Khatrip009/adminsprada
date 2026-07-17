@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import Topbar from "../components/Topbar";
 
-// Charts (wired to the new chart components)
+// Charts
 import VisitorsTrend from "../components/charts/VisitorsTrend";
 import ReviewsDonut from "../components/charts/ReviewsDonut";
 import ProductsBar from "../components/charts/ProductsBar";
@@ -23,7 +23,7 @@ import useDashboardData from "../hooks/useDashboardData";
 import useSSE from "../hooks/useSSE";
 import useLeadsStats from "../hooks/useLeadsStats";
 
-import { API_ORIGIN, getCategories } from "../lib/api"; // canonical API origin + helper
+import { API_ORIGIN } from "../lib/api"; // canonical API origin for SSE
 
 // icon
 import { Users } from "lucide-react";
@@ -52,7 +52,7 @@ export default function DashboardPage() {
   // mobile sidebar toggle
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
-  // SSE: use the canonical API origin from lib/api to avoid env mismatches
+  // SSE: use the canonical API origin from lib/api
   const sseBase = (API_ORIGIN || "").replace(/\/$/, "");
   const sseUrl = sseBase ? `${sseBase}/api/events/sse` : "/api/events/sse";
   const { connected, events } = useSSE(sseUrl) || { connected: false, events: [] };
@@ -116,7 +116,7 @@ export default function DashboardPage() {
         value: Number(v) || 0,
       }));
     } else if (typeof reviewsStats.total === "number") {
-      const avg = Number(reviewsStats.avg_rating || 0);
+      const avg = Number(reviewsStats.average || 0);
       const total = Number(reviewsStats.total || 0);
       const five = Math.round(total * Math.min(1, Math.max(0, (avg - 3) / 2)));
       const rest = Math.max(0, total - five);
@@ -127,86 +127,30 @@ export default function DashboardPage() {
     }
   }
 
-  // ---------- Products by category (attempt to use backend counts, fallback to products, then mock) ----------
-  const [productsByCategory, setProductsByCategory] = useState(null);
-  const [productsByCategoryIsMock, setProductsByCategoryIsMock] = useState(false);
-
-  useEffect(() => {
-    let mounted = true;
-
-    async function buildProductsByCategory() {
-      const mapCategories = (cats = []) =>
-        cats.map((c) => ({
-          name: c.name || c.slug || "—",
-          count: Number(c.product_count ?? c.productCount ?? 0) || 0,
-          id: c.id,
-        }));
-
-      // 1) If categories provided by hook and contain counts, use them
-      if (Array.isArray(categories) && categories.length) {
-        const mapped = mapCategories(categories);
-        const hasCounts = mapped.some((m) => Number(m.count) > 0);
-        if (hasCounts) {
-          if (!mounted) return;
-          setProductsByCategory(mapped);
-          setProductsByCategoryIsMock(false);
-          return;
-        }
-        // categories exist but counts are zero/missing — attempt to fetch fresh categories with counts
-      }
-
-      // 2) Try to fetch categories from backend (include_counts=true)
-      try {
-        const fetched = await getCategories();
-        let cats = Array.isArray(fetched) ? fetched : (fetched?.categories || fetched?.data || fetched);
-        if (!Array.isArray(cats) && cats && cats.items) cats = cats.items;
-        if (Array.isArray(cats) && cats.length) {
-          const mapped = mapCategories(cats);
-          const hasCounts = mapped.some((m) => Number(m.count) > 0);
-          if (hasCounts) {
-            if (!mounted) return;
-            setProductsByCategory(mapped);
-            setProductsByCategoryIsMock(false);
-            return;
-          }
-        }
-      } catch (err) {
-        // non-fatal; continue to derive/fallback
-      }
-
-      // 3) Derive from products array if available
-      if (Array.isArray(products) && products.length) {
-        const byCat = {};
-        products.forEach((prod) => {
-          const name =
-            (prod?.category && (prod.category.name || prod.category.slug)) ||
-            (prod.category_id ? `Category ${prod.category_id}` : "Uncategorized");
-          byCat[name] = (byCat[name] || 0) + 1;
-        });
-        const arr = Object.entries(byCat).map(([name, count]) => ({ name, count }));
-        if (!mounted) return;
-        setProductsByCategory(arr);
-        setProductsByCategoryIsMock(false);
-        return;
-      }
-
-      // 4) Final fallback: demo/mock
-      if (!mounted) return;
-      setProductsByCategory([
-        { name: "Cardamom", count: 120 },
-        { name: "Spices", count: 90 },
-        { name: "Seeds", count: 60 },
-        { name: "Napier", count: 45 },
-        { name: "Others", count: 30 },
-      ]);
-      setProductsByCategoryIsMock(true);
+  // ---------- Products by category (derive from products array) ----------
+  const productsByCategory = (() => {
+    if (Array.isArray(products) && products.length) {
+      const byCat = {};
+      products.forEach((prod) => {
+        const catName =
+          (prod?.category && (prod.category.name || prod.category.slug)) ||
+          (prod.category_id ? `Category ${prod.category_id}` : "Uncategorized");
+        byCat[catName] = (byCat[catName] || 0) + 1;
+      });
+      const arr = Object.entries(byCat).map(([name, count]) => ({ name, count }));
+      return arr.length ? arr : null;
     }
+    return null;
+  })();
 
-    buildProductsByCategory();
-    return () => {
-      mounted = false;
-    };
-  }, [categories, products]);
+  // Fallback mock data if no products
+  const finalProductsByCategory = productsByCategory || [
+    { name: "Cardamom", count: 120 },
+    { name: "Spices", count: 90 },
+    { name: "Seeds", count: 60 },
+    { name: "Napier", count: 45 },
+    { name: "Others", count: 30 },
+  ];
 
   // ProductsLine: produce a timeseries if products have created_at, else null
   let productsLineData = null;
@@ -304,23 +248,28 @@ export default function DashboardPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <MetricCard
               title="Total Visitors"
-              value={visitors?.total_visitors ?? 0}
-              delta={visitors?.visitors_today ? `Today ${visitors.visitors_today}` : null}
+              value={visitors?.total ?? 0}
+              delta={visitors?.today ? `Today ${visitors.today}` : null}
               icon="👁️"
             />
 
             <MetricCard
               title="Visitors Today"
-              value={visitors?.visitors_today ?? 0}
-              delta={visitors?.new_visitors_today ? `New ${visitors.new_visitors_today}` : null}
+              value={visitors?.today ?? 0}
+              delta={null}
               icon="📈"
             />
 
-            <MetricCard title="Products" value={Array.isArray(products) ? products.length : (products?.length ?? 0)} delta={null} icon="📦" />
+            <MetricCard
+              title="Products"
+              value={Array.isArray(products) ? products.length : 0}
+              delta={null}
+              icon="📦"
+            />
 
             <MetricCard
               title="Avg Rating"
-              value={reviewsStats?.avg_rating ?? "0.0"}
+              value={reviewsStats?.average?.toFixed(1) ?? "0.0"}
               delta={reviewsStats?.total ? `${reviewsStats.total} reviews` : null}
               icon="⭐"
             />
@@ -358,19 +307,16 @@ export default function DashboardPage() {
                 </div>
 
                 <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-                  <ProductsBar data={productsByCategory || []} />
-                  {productsByCategoryIsMock && (
-                    <div className="text-xs text-amber-600 mt-1">Using demo category data — backend categories/products not available.</div>
-                  )}
+                  <ProductsBar data={finalProductsByCategory} />
                 </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
                 <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-                  <ProductsDonut data={productsByCategory || []} />
+                  <ProductsDonut data={finalProductsByCategory} />
                 </div>
                 <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-                  <ProductsPie data={productsByCategory || []} />
+                  <ProductsPie data={finalProductsByCategory} />
                 </div>
                 <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
                   <ProductsLine data={productsLineData || []} />
@@ -384,10 +330,12 @@ export default function DashboardPage() {
                 <LatestProducts items={products || []} />
               </div>
 
+              {/* LatestBlogs fetches its own data */}
               <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-                <LatestBlogs items={Array.isArray(blogs) ? blogs : []} max={5} />
+                <LatestBlogs max={5} />
               </div>
 
+              {/* LatestLeads fetches its own data */}
               <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
                 <LatestLeads max={5} />
               </div>

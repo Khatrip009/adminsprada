@@ -1,8 +1,7 @@
 import React from "react";
+import { toAbsoluteImageUrl } from "../lib/api";
 
 export default function LatestProducts({ items = [] }) {
-  
-  // Only take the latest 5 products
   const latest = items.slice(0, 5);
 
   return (
@@ -15,12 +14,12 @@ export default function LatestProducts({ items = [] }) {
       </div>
 
       <div className="space-y-3">
-        {latest.map(p => (
+        {latest.map((p) => (
           <div key={p.id} className="flex items-center gap-3">
             <div className="w-12 h-12 rounded-md bg-gray-100 overflow-hidden">
               {p.primary_image ? (
                 <img
-                  src={p.primary_image}
+                  src={toAbsoluteImageUrl(p.primary_image)}
                   alt={p.title}
                   className="w-full h-full object-cover"
                 />

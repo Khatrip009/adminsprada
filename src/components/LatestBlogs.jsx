@@ -1,15 +1,11 @@
 // src/components/LatestBlogs.jsx
 import React, { useEffect, useState } from "react";
-import { API_ORIGIN as LIB_API_ORIGIN } from "../lib/api";
+import { getBlogs, getComments, getLikesCount } from "../lib/api";
 
 /**
- * Robust LatestBlogs.jsx
- * - Uses API_ORIGIN from src/lib/api (which reads VITE_API_ORIGIN).
- * - Falls back to relative /api if API_ORIGIN not set.
- * - If response content-type is not JSON, logs server HTML and treats as failure.
- * - Shows latest `max` blogs but clamps to 5.
+ * LatestBlogs – displays recent blog posts with comments & likes counts.
+ * Uses Supabase via the new api.js functions.
  */
-
 function niceDate(d) {
   try {
     const dt = new Date(d);
@@ -19,49 +15,43 @@ function niceDate(d) {
   }
 }
 
-function BlogCard({ blog, fallbackSrc, apiBaseForComments }) {
+function BlogCard({ blog, fallbackSrc }) {
   const [imgLoaded, setImgLoaded] = useState(false);
-  const [imgSrc, setImgSrc] = useState(blog.image || fallbackSrc);
-  const [commentsCount, setCommentsCount] = useState(
-    blog.comments_count != null ? blog.comments_count : null
-  );
+  const [imgSrc, setImgSrc] = useState(blog.og_image || blog.image || fallbackSrc);
+  const [commentsCount, setCommentsCount] = useState(null);
+  const [likesCount, setLikesCount] = useState(null);
+
+  // Fetch counts for this blog
+  useEffect(() => {
+    const fetchCounts = async () => {
+      try {
+        // Get comments (published only, unless you want all)
+        const comments = await getComments(blog.id, { all: false });
+        setCommentsCount(comments?.length || 0);
+      } catch (err) {
+        console.warn(`Failed to fetch comments for blog ${blog.id}`, err);
+        setCommentsCount(0);
+      }
+
+      try {
+        const likes = await getLikesCount(blog.id);
+        setLikesCount(likes?.count || 0);
+      } catch (err) {
+        console.warn(`Failed to fetch likes for blog ${blog.id}`, err);
+        setLikesCount(0);
+      }
+    };
+
+    fetchCounts();
+  }, [blog.id]);
 
   useEffect(() => {
-    setImgSrc(blog.image || fallbackSrc);
+    setImgSrc(blog.og_image || blog.image || fallbackSrc);
     setImgLoaded(false);
-  }, [blog.image, fallbackSrc]);
-
-  useEffect(() => {
-    if (commentsCount == null) {
-      (async () => {
-        try {
-          const idOrSlug = encodeURIComponent(blog.id || blog.slug || "");
-          const base = (apiBaseForComments || "").replace(/\/$/, "");
-          const url = base ? `${base}/api/blogs/${idOrSlug}/comments` : `/api/blogs/${idOrSlug}/comments`;
-          const res = await fetch(url, { credentials: "include" });
-          if (!res.ok) return setCommentsCount(0);
-          const ct = (res.headers.get("content-type") || "").toLowerCase();
-          if (!ct.includes("application/json")) {
-            const text = await res.text();
-            console.warn("[LatestBlogs] comments endpoint returned non-json:", url, text);
-            setCommentsCount(0);
-            return;
-          }
-          const json = await res.json();
-          if (json && Array.isArray(json.comments)) setCommentsCount(json.comments.length);
-          else if (Array.isArray(json)) setCommentsCount(json.length);
-          else setCommentsCount(0);
-        } catch (e) {
-          console.error("[LatestBlogs] comments fetch err", e);
-          setCommentsCount(0);
-        }
-      })();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // run once per card
+  }, [blog.og_image, blog.image, fallbackSrc]);
 
   return (
-    <a href={`/blog/${encodeURIComponent(blog.slug || "")}`} className="block group" aria-label={blog.title}>
+    <a href={`/blog/${encodeURIComponent(blog.slug || blog.id)}`} className="block group" aria-label={blog.title}>
       <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100 hover:shadow-md transition-shadow duration-200">
         <div className="relative w-full pt-[56%] bg-gray-100">
           <img
@@ -101,24 +91,25 @@ function BlogCard({ blog, fallbackSrc, apiBaseForComments }) {
                 <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <path d="M12 21s-7-4.35-9-7c-1.5-1.9-1-5 2-6 2-1 4-1 6-1s4 0 6 1c3 1 3.5 4.1 2 6-2 2.65-9 7-9 7z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
-                <span>{blog.likes_count != null ? blog.likes_count : "—"}</span>
+                <span>{likesCount !== null ? likesCount : "—"}</span>
               </span>
 
               <span className="inline-flex items-center gap-1">
                 <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
-                <span>{commentsCount != null ? commentsCount : "—"}</span>
+                <span>{commentsCount !== null ? commentsCount : "—"}</span>
               </span>
             </div>
 
-            <div className="text-right">
-              {Array.isArray(blog.categories) && blog.categories.length > 0 ? (
-                <div className="text-xs">
-                  <span className="px-2 py-0.5 bg-sprada3/10 text-sprada3 rounded-full">{blog.categories[0].name}</span>
-                </div>
-              ) : null}
-            </div>
+            {/* Categories are not directly available; you could fetch them separately if needed */}
+            {blog.categories && blog.categories.length > 0 && (
+              <div className="text-right">
+                <span className="px-2 py-0.5 bg-sprada3/10 text-sprada3 rounded-full">
+                  {blog.categories[0].name}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -139,65 +130,20 @@ export default function LatestBlogs({ max = 5 }) {
     setLoading(true);
     setError("");
 
-    // Build base candidates: prefer LIB_API_ORIGIN (reads VITE_API_ORIGIN), then relative fallback
-    const candidates = [];
-    if (LIB_API_ORIGIN) candidates.push(String(LIB_API_ORIGIN).replace(/\/$/, ""));
-    candidates.push(""); // relative
-
     (async () => {
-      let lastErr = null;
-      for (let i = 0; i < candidates.length && mounted; i++) {
-        const base = candidates[i];
-        const url = base ? `${base}/api/blogs?limit=${maxToShow}` : `/api/blogs?limit=${maxToShow}`;
-
-        try {
-          const res = await fetch(url, { credentials: "include" });
-          const contentType = (res.headers.get("content-type") || "").toLowerCase();
-
-          if (!res.ok) {
-            let detail = `${res.status} ${res.statusText}`;
-            if (contentType.includes("application/json")) {
-              const j = await res.json().catch(() => null);
-              detail = j && (j.error || j.message) ? (j.error || j.message) : detail;
-            } else {
-              const text = await res.text().catch(() => "");
-              console.warn("[LatestBlogs] non-json error page", url, text.slice(0, 800));
-              detail = `unexpected_content_type(${res.status})`;
-            }
-            throw new Error(detail);
-          }
-
-          if (!contentType.includes("application/json")) {
-            const text = await res.text().catch(() => "");
-            console.warn("[LatestBlogs] expected JSON but got HTML/text from", url, text.slice(0, 800));
-            throw new Error("unexpected_content_type");
-          }
-
-          const json = await res.json();
-          const arr = Array.isArray(json) ? json : (Array.isArray(json.blogs) ? json.blogs : null);
-          if (!arr) throw new Error("invalid_json_structure");
-
-          const sorted = arr.slice().sort((a, b) => {
-            const da = new Date(b.published_at || b.created_at).getTime() || 0;
-            const db = new Date(a.published_at || a.created_at).getTime() || 0;
-            return da - db;
-          });
-
-          if (mounted) {
-            setBlogs(sorted.slice(0, maxToShow));
-            setLoading(false);
-            setError("");
-          }
-          return;
-        } catch (err) {
-          lastErr = err;
-          console.warn("[LatestBlogs] attempt failed for base:", base || "(relative)", err && err.message ? err.message : err);
-        }
-      }
-
-      if (mounted) {
+      try {
+        const data = await getBlogs(maxToShow); // fetches latest `maxToShow` blogs
+        if (!mounted) return;
+        // getBlogs returns an array sorted by created_at desc already
+        setBlogs(data);
         setLoading(false);
-        setError(lastErr && lastErr.message ? lastErr.message : "failed");
+        setError("");
+      } catch (err) {
+        console.error("[LatestBlogs] fetch error", err);
+        if (mounted) {
+          setError(err.message || "Failed to load blogs");
+          setLoading(false);
+        }
       }
     })();
 
@@ -218,7 +164,7 @@ export default function LatestBlogs({ max = 5 }) {
 
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {Array.from({ length: Math.max(1, Math.min(5, maxToShow)) }).map((_, i) => (
+          {Array.from({ length: Math.min(5, maxToShow) }).map((_, i) => (
             <div key={i} className="bg-gray-50 rounded-2xl p-3 animate-pulse h-40" />
           ))}
         </div>
@@ -229,7 +175,7 @@ export default function LatestBlogs({ max = 5 }) {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {blogs.map((b) => (
-            <BlogCard key={b.id || b.slug} blog={b} fallbackSrc={fallbackSrc} apiBaseForComments={LIB_API_ORIGIN || ""} />
+            <BlogCard key={b.id} blog={b} fallbackSrc={fallbackSrc} />
           ))}
         </div>
       )}

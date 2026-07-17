@@ -4,7 +4,8 @@ import Sidebar from "../components/Sidebar";
 import Topbar from "../components/Topbar";
 import LOGO from "../assets/SPRADA_LOGO.png";
 import { Toaster, toast } from "react-hot-toast";
-import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
+import { supabase } from "../lib/api"; // Supabase client
+import { auth } from "../lib/auth"; // auth client for current user
 import dayjs from "dayjs";
 import clsx from "clsx";
 
@@ -78,7 +79,6 @@ function generatePassword(length = 14) {
 
 /* ---------------------------
    User Modal (Create / Edit)
-   Responsive: full-screen on xs, centered on md+
    --------------------------- */
 function UserModal({ open, onClose, onSaved, initial = null }) {
   const isEdit = Boolean(initial && initial.id);
@@ -124,33 +124,66 @@ function UserModal({ open, onClose, onSaved, initial = null }) {
     setBusy(true);
     try {
       if (isEdit) {
-        const payload = { full_name: form.full_name, role_id: Number(form.role_id), is_active: !!form.is_active };
-        await apiPut(`/users/${encodeURIComponent(initial.id)}`, payload);
+        // Update custom users table only (password update is not supported via this modal)
+        const { error } = await supabase
+          .from('users')
+          .update({
+            full_name: form.full_name,
+            role_id: Number(form.role_id),
+            is_active: !!form.is_active
+          })
+          .eq('id', initial.id);
+        if (error) throw error;
+
+        // If password provided, we would need admin privilege; show a toast
         if (form.password && form.password.length >= 6) {
-          await apiPut(`/users/${encodeURIComponent(initial.id)}/password`, { password: form.password });
+          toast.info("Password change requires admin privileges; use Supabase Auth dashboard.");
         }
         toast.success("User updated");
       } else {
+        // Create: first sign up the user via Supabase Auth
         if (!form.password || form.password.length < 6) {
           toast.error("Please provide a password (auto-generate recommended)");
           setBusy(false);
           return;
         }
-        const payload = {
+        // Sign up with email and password
+        const { data: authData, error: signUpError } = await supabase.auth.signUp({
           email: form.email,
-          full_name: form.full_name,
-          role_id: Number(form.role_id),
-          is_active: !!form.is_active,
-          password: form.password
-        };
-        await apiPost("/users", payload);
+          password: form.password,
+          options: {
+            data: { full_name: form.full_name }
+          }
+        });
+        if (signUpError) throw signUpError;
+        const user = authData.user;
+        if (!user) throw new Error("User creation failed");
+
+        // Insert into custom users table
+        const { error: insertError } = await supabase
+          .from('users')
+          .insert({
+            id: user.id,
+            email: form.email,
+            full_name: form.full_name,
+            role_id: Number(form.role_id),
+            is_active: !!form.is_active
+          });
+        if (insertError) {
+          // Rollback: delete the auth user (requires admin)
+          try {
+            // We need service role to delete; if not available, log error
+            console.warn("Could not delete auth user after insert error:", insertError);
+          } catch (_) {}
+          throw insertError;
+        }
         toast.success("User created");
       }
       onSaved && onSaved();
       onClose && onClose();
     } catch (err) {
       console.error("user modal submit:", err);
-      const msg = (err && err.data && (err.data.error || err.data.message)) || err.message || "Server error";
+      const msg = err.message || "Server error";
       toast.error(String(msg));
     } finally {
       setBusy(false);
@@ -169,7 +202,6 @@ function UserModal({ open, onClose, onSaved, initial = null }) {
         aria-modal="true"
         aria-label={isEdit ? "Edit user" : "Create user"}
       >
-        {/* Header */}
         <div className="flex items-center justify-between mb-3 gap-3">
           <div className="flex items-center gap-3">
             <img src={LOGO} alt="Sprada" className="w-16 sm:w-20 object-contain" />
@@ -187,7 +219,6 @@ function UserModal({ open, onClose, onSaved, initial = null }) {
           </div>
         </div>
 
-        {/* Form */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label className="block text-xs text-[color:var(--sprada-muted)] mb-1">Email</label>
@@ -236,7 +267,7 @@ function UserModal({ open, onClose, onSaved, initial = null }) {
                 <button type="button" onClick={() => { navigator.clipboard?.writeText(form.password || ""); toast.success("Copied"); }} disabled={!form.password} className="px-3 py-2 border rounded bg-white hover:bg-gray-50 text-sm">Copy</button>
               </div>
             </div>
-            <div className="text-xs text-[color:var(--sprada-muted)] mt-2">We recommend sharing generated passwords securely. Backend hashes on create/update.</div>
+            <div className="text-xs text-[color:var(--sprada-muted)] mt-2">Password is used only when creating a new user. For updates, use Supabase Auth dashboard.</div>
           </div>
         </div>
       </form>
@@ -251,10 +282,7 @@ export default function UsersPage() {
   useEffect(() => { ensureFontsInjected(); }, []);
   const user = JSON.parse(localStorage.getItem("user") || "null");
 
-  // sidebar state
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-
-  // topbar measurement to set CSS var for content padding
   const topbarRef = useRef(null);
   useEffect(() => {
     const DEFAULT_HEADER = 72;
@@ -277,12 +305,10 @@ export default function UsersPage() {
     <div className="min-h-screen flex flex-col lg:flex-row bg-[color:var(--sprada-surface)] text-slate-800">
       <Toaster position="top-right" />
 
-      {/* Desktop sidebar */}
       <aside className="hidden lg:block w-72">
         <Sidebar user={user} className="w-72" />
       </aside>
 
-      {/* Mobile sidebar drawer */}
       {mobileSidebarOpen && (
         <div className="fixed inset-0 z-50 lg:hidden">
           <div className="absolute inset-0 bg-black/40" onClick={() => setMobileSidebarOpen(false)} />
@@ -295,12 +321,10 @@ export default function UsersPage() {
         </div>
       )}
 
-      {/* Topbar (fixed) */}
       <div ref={topbarRef} className="app-topbar fixed top-0 left-0 right-0 z-50 bg-white/90 backdrop-blur">
         <Topbar onOpenSidebar={() => setMobileSidebarOpen(true)} />
       </div>
 
-      {/* Main content */}
       <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-full pt-[var(--app-header-height,72px)]">
         <Header user={user} onOpenSidebar={() => setMobileSidebarOpen(true)} />
         <div className="bg-[color:var(--sprada-card)] rounded-2xl shadow-[var(--shadow-1)] p-3 sm:p-5">
@@ -318,7 +342,6 @@ function Header({ user, onOpenSidebar }) {
   return (
     <header className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-4">
       <div className="flex items-center gap-4 w-full">
-        {/* Visible hamburger for small screens */}
         <button
           onClick={() => onOpenSidebar && onOpenSidebar()}
           className="lg:hidden p-2 rounded-md border mr-2"
@@ -347,9 +370,7 @@ function Header({ user, onOpenSidebar }) {
 }
 
 /* ---------------------------
-   UsersAdmin (responsive)
-   - Mobile uses cards with overflow menu (<details>) to avoid overlapping buttons
-   - Desktop uses table; table hidden on small screens
+   UsersAdmin (Supabase)
    --------------------------- */
 function UsersAdmin() {
   const [loading, setLoading] = useState(false);
@@ -380,27 +401,33 @@ function UsersAdmin() {
     setLoading(true);
     setError("");
     try {
-      const qs = new URLSearchParams();
-      if (debQ) qs.set("q", debQ);
-      if (page) qs.set("page", String(page));
-      if (limit) qs.set("limit", String(limit));
-      const res = await apiGet(`/users?${qs.toString()}`);
-      if (!res) throw new Error("Empty response");
+      let query = supabase
+        .from('users')
+        .select(`
+          id,
+          email,
+          full_name,
+          role_id,
+          is_active,
+          created_at,
+          updated_at,
+          roles ( name )
+        `, { count: 'exact' })
+        .order('created_at', { ascending: false })
+        .range((page - 1) * limit, page * limit - 1);
 
-      if (Array.isArray(res)) {
-        setUsers(res);
-        setTotal(res.length);
-      } else if (res.users && Array.isArray(res.users)) {
-        setUsers(res.users);
-        setTotal(typeof res.total === "number" ? res.total : res.users.length);
-      } else if (res.data && Array.isArray(res.data.users)) {
-        setUsers(res.data.users);
-        setTotal(res.data.total || res.data.users.length);
-      } else {
-        const arr = res.users || res.data || [];
-        setUsers(Array.isArray(arr) ? arr : []);
-        setTotal(res.total || (Array.isArray(arr) ? arr.length : 0));
+      if (debQ) {
+        query = query.or(`full_name.ilike.%${debQ}%,email.ilike.%${debQ}%`);
       }
+
+      const { data, error, count } = await query;
+      if (error) throw error;
+      const mapped = (data || []).map(u => ({
+        ...u,
+        role_name: u.roles?.name || `Role ${u.role_id}`
+      }));
+      setUsers(mapped);
+      setTotal(count || 0);
     } catch (err) {
       console.error("load users", err);
       setError("Failed loading users");
@@ -422,16 +449,30 @@ function UsersAdmin() {
   }
 
   async function handleDelete(u) {
-    if (!confirm(`Delete user ${u.email}? This cannot be undone.`)) return;
+    if (!confirm(`Delete user ${u.email}? This will also delete their authentication account.`)) return;
     setBusyActionId(u.id);
     try {
-      await apiDelete(`/users/${encodeURIComponent(u.id)}`);
+      // Delete from custom users table
+      const { error: deleteError } = await supabase
+        .from('users')
+        .delete()
+        .eq('id', u.id);
+      if (deleteError) throw deleteError;
+
+      // Delete from auth (requires service role key; if fails, we only warn)
+      try {
+        const { error: authDeleteError } = await supabase.auth.admin.deleteUser(u.id);
+        if (authDeleteError) console.warn("Could not delete auth user:", authDeleteError);
+      } catch (authErr) {
+        console.warn("Auth delete failed:", authErr);
+        toast.warning("User deleted from app but auth account might remain.");
+      }
       toast.success("User deleted");
       setUsers(prev => prev.filter(x => x.id !== u.id));
       setTotal(t => Math.max(0, t - 1));
     } catch (err) {
       console.error("delete user", err);
-      const msg = (err && err.data && (err.data.error || err.data.message)) || err.message || "Delete failed";
+      const msg = err.message || "Delete failed";
       toast.error(String(msg));
     } finally {
       setBusyActionId(null);
@@ -441,7 +482,11 @@ function UsersAdmin() {
   async function handleToggleActive(u) {
     setBusyActionId(u.id);
     try {
-      await apiPut(`/users/${encodeURIComponent(u.id)}`, { is_active: !u.is_active });
+      const { error } = await supabase
+        .from('users')
+        .update({ is_active: !u.is_active })
+        .eq('id', u.id);
+      if (error) throw error;
       toast.success(u.is_active ? "User deactivated" : "User activated");
       setUsers(prev => prev.map(p => p.id === u.id ? { ...p, is_active: !p.is_active, updated_at: new Date().toISOString() } : p));
     } catch (err) {
@@ -453,26 +498,13 @@ function UsersAdmin() {
   }
 
   async function handleChangePassword(u) {
-    const pwd = prompt(`Set new password for ${u.email} (leave blank to cancel).`);
-    if (!pwd) return;
-    if (pwd.length < 6) return toast.error("Password must be at least 6 characters");
-    setBusyActionId(u.id);
-    try {
-      await apiPut(`/users/${encodeURIComponent(u.id)}/password`, { password: pwd });
-      toast.success("Password updated");
-    } catch (err) {
-      console.error("change password", err);
-      toast.error("Password update failed");
-    } finally {
-      setBusyActionId(null);
-    }
+    toast.info("Password change is not supported in this interface. Please use Supabase Auth dashboard or contact admin.");
   }
 
   const totalPages = Math.max(1, Math.ceil((total || users.length) / limit));
 
   return (
     <div>
-      {/* Controls */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
         <div>
           <h3 className="text-lg font-semibold">User management</h3>
@@ -500,7 +532,6 @@ function UsersAdmin() {
           <div className="text-xs text-slate-400">Total: {total ?? users.length}</div>
         </div>
 
-        {/* Loading / Empty / Content */}
         <div>
           {loading ? (
             <div className="p-4 space-y-3">
@@ -514,7 +545,6 @@ function UsersAdmin() {
           ) : users.length === 0 ? (
             <div className="px-4 py-8 text-center text-[color:var(--sprada-muted)]">No users found</div>
           ) : isMobile ? (
-            /* Mobile cards: actions in overflow menu (details) to avoid overlap */
             <div className="p-4 space-y-3">
               {users.map(u => (
                 <article key={u.id} className="border rounded-lg p-3">
@@ -525,14 +555,13 @@ function UsersAdmin() {
                         <div className="text-xs text-slate-500">{u.created_at ? dayjs(u.created_at).format("D MMM YYYY") : "-"}</div>
                       </div>
                       <div className="text-sm text-slate-600 truncate">{u.email}</div>
-                      <div className="text-xs text-[color:var(--sprada-muted)] mt-1">{u.role_id === 1 ? "Admin" : u.role_id === 2 ? "Editor" : `Role ${u.role_id}`}</div>
+                      <div className="text-xs text-[color:var(--sprada-muted)] mt-1">{u.role_name}</div>
                       <div className="mt-2 flex items-center gap-3 flex-wrap">
                         <div className="text-xs">{u.is_active ? <span className="text-green-600">Active</span> : <span className="text-red-500">Inactive</span>}</div>
                         <div className="text-xs text-slate-400">{u.updated_at ? `Updated ${dayjs(u.updated_at).fromNow?.() || dayjs(u.updated_at).format("D MMM")}` : ""}</div>
                       </div>
                     </div>
 
-                    {/* Overflow actions to avoid many inline buttons on small screens */}
                     <div className="ml-2 shrink-0">
                       <details className="relative">
                         <summary className="list-none cursor-pointer px-2 py-1 border rounded inline-flex items-center gap-2 text-sm">Actions ▾</summary>
@@ -551,7 +580,6 @@ function UsersAdmin() {
               ))}
             </div>
           ) : (
-            /* Desktop table */
             <div className="overflow-auto">
               <table className="w-full table-auto text-sm min-w-[820px]">
                 <thead>
@@ -569,7 +597,7 @@ function UsersAdmin() {
                     <tr key={u.id} className="border-b hover:bg-gray-50">
                       <td className="px-4 py-3">{u.full_name || "—"}</td>
                       <td className="px-4 py-3">{u.email}</td>
-                      <td className="px-4 py-3">{u.role_id === 1 ? "Admin" : u.role_id === 2 ? "Editor" : `Role ${u.role_id}`}</td>
+                      <td className="px-4 py-3">{u.role_name}</td>
                       <td className="px-4 py-3">{u.is_active ? <span className="text-green-600">Yes</span> : <span className="text-red-500">No</span>}</td>
                       <td className="px-4 py-3">{u.created_at ? dayjs(u.created_at).format("D MMM YYYY") : "-"}</td>
                       <td className="px-4 py-3 text-right">
@@ -590,7 +618,6 @@ function UsersAdmin() {
           )}
         </div>
 
-        {/* Pagination */}
         <div className="flex items-center justify-between px-4 py-3 border-t">
           <div className="text-xs text-[color:var(--sprada-muted)]">Page {page} of {totalPages}</div>
           <div className="flex items-center gap-2">

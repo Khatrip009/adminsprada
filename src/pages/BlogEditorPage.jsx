@@ -15,16 +15,19 @@ import DOMPurify from "dompurify";
 import Sidebar from "../components/Sidebar";
 import LOGO from "../assets/SPRADA_LOGO.png";
 
+// ✅ Import only the needed Supabase functions
 import {
-  apiGet,
-  apiPost,
-  apiPut,
   uploadFile,
-  getBlogFlexible
+  getBlogFlexible,
+  createBlog,
+  updateBlog,
+  publishBlog,
+  getBlogImages,
+  toAbsoluteImageUrl,
 } from "../lib/api";
 
 /* -------------------------
-   Tiny helpers & styles
+   Tiny helpers & styles (unchanged)
    ------------------------- */
 function ensureFontsAndStyles() {
   if (typeof document === "undefined") return;
@@ -39,7 +42,6 @@ function ensureFontsAndStyles() {
       .btn-primary { background: #0f6b5a; color: white; padding: 8px 14px; border-radius: 8px; border: none; cursor: pointer; }
       .btn-ghost { background: white; border: 1px solid #e6e6e6; padding: 8px 12px; border-radius: 8px; cursor: pointer; }
       .block-box { border: 1px solid #eef2f7; padding: 12px; border-radius: 8px; background: #ffffff; }
-      /* TipTap content base */
       .tiptap-content { min-height: 160px; }
     `;
     document.head.appendChild(s);
@@ -119,7 +121,7 @@ function newBlock(type) {
 }
 
 /* -------------------------
-   Preview component
+   Preview component (unchanged)
    ------------------------- */
 function BlogPreview({ blog }) {
   if (!blog) return null;
@@ -268,12 +270,13 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
           };
           if (!mounted) return;
           setForm(data);
-          // fetch blog images if endpoint exists
+          // ✅ fetch blog images using getBlogImages
           try {
-            const r = await apiGet(`/blog-images?blog_id=${encodeURIComponent(data.id)}`);
-            const imgs = r && (r.images || (Array.isArray(r) ? r : [])) || [];
+            const imgs = await getBlogImages(data.id);
             setUploadedImages(imgs.map(it => ({ id: it.id, url: normalizeUploadUrl(it.url || it.public_url || it.path || ""), caption: it.caption || "" })));
-          } catch (e) { setUploadedImages([]); }
+          } catch (e) {
+            setUploadedImages([]);
+          }
         } catch (err) {
           console.error("load blog", err);
           toast.error("Failed loading blog");
@@ -288,7 +291,7 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [blogIdParam, pageMode]);
 
-  /* Small block operations */
+  /* Small block operations (unchanged) */
   function addBlock(type, index = null) {
     const b = newBlock(type);
     setForm(prev => {
@@ -328,13 +331,14 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
     setDirty(true);
   }
 
-  /* Upload helpers */
+  /* Upload helpers – now uses toAbsoluteImageUrl to get public URL from file path */
   async function handleUploadFileAsUrl(file) {
     if (!file) return null;
     const id = toast.loading("Uploading image...");
     try {
-      const raw = await uploadFile(file, { space: "blogs" });
-      const url = normalizeUploadUrl(raw);
+      const filePath = await uploadFile(file, { space: "blogs" });
+      const publicUrl = toAbsoluteImageUrl(filePath); // ✅ convert path to URL
+      const url = normalizeUploadUrl(publicUrl);
       toast.success("Uploaded", { id });
       return url;
     } catch (e) {
@@ -421,13 +425,13 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
           is_published: !!form.is_published
         };
         if (form.id) {
-          await apiPut(`/blogs/${encodeURIComponent(form.id)}`, payload);
+          await updateBlog(form.id, payload); // ✅ use updateBlog
           setAutosaveStatus("saved");
           setDirty(false);
         } else {
           try {
-            const created = await apiPost("/blogs", { ...payload, is_published: false });
-            const idVal = created && (created.blog?.id || created.id || (created.blog || null));
+            const created = await createBlog({ ...payload, is_published: false }); // ✅ use createBlog
+            const idVal = created?.id || null;
             if (idVal) {
               setForm(prev => ({ ...prev, id: idVal }));
             }
@@ -472,12 +476,12 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
         is_published: !!publish || !!form.is_published
       };
       if (form.id) {
-        await apiPut(`/blogs/${encodeURIComponent(form.id)}`, payload);
+        await updateBlog(form.id, payload); // ✅ use updateBlog
         toast.success(publish ? "Published" : "Saved");
         setForm(prev => ({ ...prev, content, is_published: publish ? true : prev.is_published }));
       } else {
-        const created = await apiPost("/blogs", payload);
-        const idVal = created && (created.blog?.id || created.id || (created.blog || null));
+        const created = await createBlog(payload); // ✅ use createBlog
+        const idVal = created?.id || null;
         if (idVal) {
           setForm(prev => ({ ...prev, id: idVal, content, is_published: publish ? true : prev.is_published }));
           toast.success("Created");
@@ -494,9 +498,7 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
       if (err?.status === 409) toast.error("Slug already taken");
       else if (err?.status === 401) {
         toast.error("Session expired");
-        localStorage.removeItem("accessToken");
-        localStorage.removeItem("refreshToken");
-        localStorage.removeItem("user");
+        // logout and redirect handled by auth provider
         navigate("/login");
       } else toast.error("Save failed");
     } finally {
@@ -508,7 +510,7 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
     try {
       if (!form.id) { await saveHandler({ publish: true }); return; }
       const publish = !form.is_published;
-      await apiPost(`/blogs/${encodeURIComponent(form.id)}/publish`, { publish });
+      await publishBlog(form.id, { publish }); // ✅ use publishBlog
       setForm(prev => ({ ...prev, is_published: publish }));
       toast.success(publish ? "Published" : "Unpublished");
     } catch (e) {
@@ -587,19 +589,17 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
   const readingStats = estimateReadingTime(plain);
   const wordCount = readingStats.words;
 
-  /* UI render */
+  /* UI render (unchanged) */
   return (
     <div className="min-h-screen sprada-ui bg-gray-50">
       <Toaster position="bottom-right" />
 
       <div className="flex">
-        {/* Sidebar hidden on small screens; shows on large (lg) and above */}
         <div className="hidden lg:block w-72">
           <Sidebar user={JSON.parse(localStorage.getItem("user") || "null")} className="w-72" />
         </div>
 
         <main className="flex-1 p-4 md:p-6 lg:p-8">
-          {/* Mobile top bar (visible on small/medium screens) */}
           <div className="flex items-center justify-between mb-4 lg:hidden">
             <div className="flex items-center gap-3">
               <img src={LOGO} alt="logo" className="w-28 h-auto object-contain" />
@@ -673,7 +673,6 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
                   </div>
                 </div>
                 <div className="rounded bg-white p-2">
-                  {/* TipTap area: make scrollable on small viewports */}
                   <div className="min-h-[160px] max-h-[260px] overflow-auto">
                     <EditorContent editor={editor} />
                   </div>
@@ -715,7 +714,7 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
                             </div>
                           </div>
 
-                          {/* Block editors */}
+                          {/* Block editors – unchanged */}
                           {blk.type === "heading" && (
                             <div>
                               <input value={blk.text || ""} onChange={e => updateBlock(i, { text: e.target.value })} placeholder="Heading text" aria-label="Heading text" className="w-full border rounded px-2 py-1 mb-2" />
@@ -833,14 +832,17 @@ export default function BlogEditorPage({ mode: forcedMode } = {}) {
                   <button
                     className="btn-ghost w-full"
                     onClick={async () => {
-                      const url = await handleUploadFileAsUrl(await (await new Promise(resolve => {
+                      const file = await new Promise(resolve => {
                         const inp = document.createElement("input");
                         inp.type = "file";
                         inp.accept = "image/*";
                         inp.onchange = e => resolve(e.target.files?.[0]);
                         inp.click();
-                      })));
-                      if (url) setForm(prev => ({ ...prev, og_image: url }));
+                      });
+                      if (file) {
+                        const url = await handleUploadFileAsUrl(file);
+                        if (url) setForm(prev => ({ ...prev, og_image: url }));
+                      }
                     }}
                   >
                     Upload

@@ -1,6 +1,6 @@
 // src/components/layout/Sidebar.jsx
 import React, { useEffect, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import {
   FiHome,
   FiBarChart2,
@@ -12,14 +12,13 @@ import {
   FiChevronLeft
 } from "react-icons/fi";
 import clsx from "clsx";
-import { apiGet } from "../lib/api"; // adjust only if your project structure differs
+import { getProductCount, logout as apiLogout } from "../lib/api";
 
 export default function Sidebar({ compact: initialCompact = false, user = null, className = "" }) {
   const [compact, setCompact] = useState(initialCompact);
-
-  // product count state
   const [productCount, setProductCount] = useState(null);
   const [loadingCount, setLoadingCount] = useState(false);
+  const navigate = useNavigate();
 
   // user.role: numeric role_id from backend (1 admin, 2 editor, etc.)
   const role = user?.role ?? null;
@@ -33,22 +32,16 @@ export default function Sidebar({ compact: initialCompact = false, user = null, 
     { to: "/dashboard/Leads", label: "Leads", icon: <FiBell />, adminOnly: true },
   ];
 
+  // Load product count
   useEffect(() => {
     let mounted = true;
     async function loadCount() {
       try {
         setLoadingCount(true);
-        // ask for just 1 row but rely on API returning `total` for pagination
-        const res = await apiGet("/products?limit=1");
+        // ✅ Use getProductCount from new api.js
+        const count = await getProductCount();
         if (!mounted) return;
-        if (res && typeof res === "object") {
-          if (typeof res.total === "number") setProductCount(res.total);
-          else if (Array.isArray(res.products)) setProductCount(res.products.length);
-          else if (Array.isArray(res)) setProductCount(res.length);
-          else setProductCount(null);
-        } else {
-          setProductCount(null);
-        }
+        setProductCount(count);
       } catch (e) {
         console.warn("[Sidebar] failed to load product count", e);
         if (mounted) setProductCount(null);
@@ -58,15 +51,27 @@ export default function Sidebar({ compact: initialCompact = false, user = null, 
     }
 
     loadCount();
-
     return () => { mounted = false; };
   }, []);
 
-  // small helper for initials avatar
+  // Helper for initials avatar
   function initialsOf(name) {
     if (!name) return "S2";
     const parts = String(name).trim().split(/\s+/).slice(0, 2);
     return parts.map(p => p[0]?.toUpperCase() || "").join("") || "U";
+  }
+
+  // Logout handler
+  async function handleLogout() {
+    try {
+      await apiLogout(); // clears Supabase session and local storage
+      navigate("/login", { replace: true });
+    } catch (err) {
+      console.warn("Logout error", err);
+      // Fallback: clear storage and redirect
+      localStorage.clear();
+      navigate("/login", { replace: true });
+    }
   }
 
   return (
@@ -124,7 +129,7 @@ export default function Sidebar({ compact: initialCompact = false, user = null, 
                 <div className="flex items-center justify-between w-full">
                   <span className="text-sm">{it.label}</span>
 
-                  {/* show product count only for Products row */}
+                  {/* Show product count only for Products row */}
                   {it.to === "/dashboard/products" && (
                     <span className="ml-2 flex items-center">
                       {loadingCount ? (
@@ -164,15 +169,7 @@ export default function Sidebar({ compact: initialCompact = false, user = null, 
 
         <button
           className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-sprada1/10 transition text-sprada2/80"
-          onClick={() => {
-            try {
-              // if you have an auth provider, call logout there instead
-              localStorage.clear();
-              window.location.href = "/login";
-            } catch {
-              window.location.href = "/login";
-            }
-          }}
+          onClick={handleLogout}
         >
           <span className="text-sm font-medium">{compact ? "Logout" : "Sign out"}</span>
         </button>

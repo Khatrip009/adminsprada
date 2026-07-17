@@ -1,3 +1,4 @@
+// src/hooks/useLeadsStats.js
 import { useEffect, useState, useCallback } from "react";
 import { getLeadsStats } from "../lib/api";
 
@@ -10,15 +11,9 @@ export default function useLeadsStats({ auto = true, pollIntervalMs = 0 } = {}) 
     setLoading(true);
     setError(null);
     try {
-      // use API helper (which calls /leads-stats/stats)
+      // getLeadsStats now returns { total, today, week, month } directly
       const res = await getLeadsStats();
-      // backend shape: { ok: true, stats: { ... } }
-      if (res && res.stats) {
-        setStats(res.stats);
-      } else {
-        // fallback to direct shapes
-        setStats(res || null);
-      }
+      setStats(res || null);
     } catch (err) {
       setError(err);
     } finally {

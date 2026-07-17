@@ -1,4 +1,4 @@
-// src/context/AuthProvider.jsx
+// src/context/AuthProvider.jsx (unchanged)
 import React, { createContext, useContext, useEffect, useState } from "react";
 import authClient from "../lib/auth";
 
@@ -13,16 +13,13 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    // subscribe to auth changes (tokens/user updates)
     const unsub = authClient.subscribe(({ user: u }) => {
       setUser(u || null);
     });
     return unsub;
   }, []);
 
-  // helper wrappers
   async function loginFromApiResponse(respObj) {
-    // respObj expected: { accessToken, refreshToken, user }
     await authClient.loginWithTokens(respObj);
   }
 
@@ -30,7 +27,6 @@ export function AuthProvider({ children }) {
     await authClient.logout();
   }
 
-  // expose a small surface that's convenient inside react components
   const value = {
     auth: authClient,
     user,

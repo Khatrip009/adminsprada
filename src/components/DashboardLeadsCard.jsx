@@ -17,6 +17,7 @@ export default function DashboardLeadsCard({ max = 3 }) {
     let mounted = true;
     (async () => {
       try {
+        // ✅ getLeadsStats returns { total, today, week, month }
         const s = await getLeadsStats();
         if (!mounted) return;
         setStats(s || {});
@@ -25,8 +26,8 @@ export default function DashboardLeadsCard({ max = 3 }) {
       }
 
       try {
-        const r = await getLeads({ page: 1, limit: max });
-        const items = r?.leads || r?.items || r || [];
+        // ✅ getLeads(limit) returns an array of leads
+        const items = await getLeads(max);
         if (!mounted) return;
         setRecent(Array.isArray(items) ? items.slice(0, max) : []);
       } catch (err) {
@@ -39,8 +40,8 @@ export default function DashboardLeadsCard({ max = 3 }) {
     return () => { mounted = false; };
   }, [max]);
 
-  const total = stats?.total ?? (stats?.all ?? 0);
-  const today = stats?.today ?? stats?.new_today ?? 0;
+  const total = stats?.total ?? 0;
+  const today = stats?.today ?? 0;
 
   return (
     <div className="space-y-4">
@@ -56,20 +57,25 @@ export default function DashboardLeadsCard({ max = 3 }) {
           <div className="text-sm font-medium">Latest leads</div>
         </div>
 
-        {loading ? <div className="space-y-2 animate-pulse">
-          <div className="h-4 bg-gray-100 rounded" />
-          <div className="h-4 bg-gray-100 rounded" />
-          <div className="h-4 bg-gray-100 rounded" />
-        </div> : (
-          recent.length === 0 ? <div className="text-sm text-slate-500">No recent leads</div> :
+        {loading ? (
+          <div className="space-y-2 animate-pulse">
+            <div className="h-4 bg-gray-100 rounded" />
+            <div className="h-4 bg-gray-100 rounded" />
+            <div className="h-4 bg-gray-100 rounded" />
+          </div>
+        ) : recent.length === 0 ? (
+          <div className="text-sm text-slate-500">No recent leads</div>
+        ) : (
           <div className="space-y-2">
-            {recent.map(r => (
+            {recent.map((r) => (
               <div key={r.id} className="flex items-start justify-between">
                 <div>
                   <div className="font-medium text-sm">{r.name || r.email}</div>
                   <div className="text-xs text-slate-500">{r.email || r.phone}</div>
                 </div>
-                <div className="text-xs text-slate-400">{new Date(r.created_at || Date.now()).toLocaleDateString()}</div>
+                <div className="text-xs text-slate-400">
+                  {new Date(r.created_at || Date.now()).toLocaleDateString()}
+                </div>
               </div>
             ))}
           </div>
